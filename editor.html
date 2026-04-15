@@ -141,10 +141,46 @@ header h1 {
 
 .canvas-controls {
   position: absolute;
-  top: 8px;
-  right: 12px;
+  bottom: 10px;
+  left: 10px;
   display: flex;
   gap: 6px;
+  align-items: center;
+}
+.anim-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0,0,0,0.7);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--accent-bright);
+  font-family: 'Courier New', monospace;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.anim-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4a4;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.anim-indicator.paused .anim-dot {
+  background: var(--warn);
+  animation: none;
+}
+.anim-indicator.paused {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
 }
 
 .canvas-btn {
@@ -1089,10 +1125,14 @@ header h1 {
   <div class="canvas-wrap" id="canvas-wrap">
     <canvas id="live2d-canvas"></canvas>
     <div class="canvas-info" id="canvas-info">No model</div>
-    <div class="canvas-controls">
-      <button class="canvas-btn" id="btn-reset" title="Reset all parameters to defaults">Reset</button>
-      <button class="canvas-btn" id="btn-pause" title="Pause/resume animations to control sliders freely">&#x23F8; Pause Animations</button>
-    </div>
+<div class="canvas-controls">
+<button class="canvas-btn" id="btn-reset" title="Reset all parameters to defaults">Reset</button>
+<button class="canvas-btn" id="btn-pause" title="Pause/resume animations to control sliders freely">&#x23F8; Pause Animations</button>
+<div id="anim-indicator" class="anim-indicator" title="Currently playing animation">
+  <span class="anim-dot"></span>
+  <span id="anim-name">idle</span>
+</div>
+</div>
     <div class="loading-overlay" id="loading" style="display: none;">
       <div class="spinner"></div>
       <div id="loading-text">Loading model...</div>
@@ -1442,6 +1482,38 @@ async function loadModel(name) {
     if (!motionsPaused) {
       togglePause();
     }
+
+    // Animation indicator — track which motion is playing
+    const animNameEl = document.getElementById('anim-name');
+    const animIndicatorEl = document.getElementById('anim-indicator');
+    animIndicatorEl.classList.add('paused');
+    animNameEl.textContent = 'paused';
+
+    var _lastMotionFile = '';
+    setInterval(() => {
+      if (!live2dModel || !live2dModel.internalModel) return;
+      const mm2 = live2dModel.internalModel.motionManager;
+      if (!mm2 || motionsPaused) {
+        if (animNameEl.textContent !== 'paused') {
+          animNameEl.textContent = 'paused';
+          animIndicatorEl.classList.add('paused');
+        }
+        return;
+      }
+      try {
+        const motions = mm2._motions;
+        if (motions && motions.length > 0) {
+          const current = motions[0];
+          const file = current?._motion?._sourceFilePath || '';
+          if (file && file !== _lastMotionFile) {
+            _lastMotionFile = file;
+            const name = file.split('/').pop().replace('.motion3.json', '');
+            animNameEl.textContent = name;
+            animIndicatorEl.classList.remove('paused');
+          }
+        }
+      } catch(e) {}
+    }, 500);
 
     // Canvas info
     document.getElementById('canvas-info').textContent =
@@ -2461,6 +2533,8 @@ function togglePause() {
     }
 
     toast('Animations paused — sliders have full control', 'info');
+    const ai = document.getElementById('anim-indicator');
+    if (ai) { ai.classList.add('paused'); document.getElementById('anim-name').textContent = 'paused'; }
   } else {
     // Resume: restore motion manager, eye blink, and breath
     if (live2dModel) {
@@ -2479,6 +2553,8 @@ function togglePause() {
     btn.style.borderColor = '';
     btn.style.color = '';
     toast('Animations resumed', 'info');
+    const ai = document.getElementById('anim-indicator');
+    if (ai) { ai.classList.remove('paused'); document.getElementById('anim-name').textContent = 'resuming...'; }
   }
 }
 
@@ -3332,7 +3408,16 @@ async function loadTextureStrip() {
   const stripList = document.getElementById('tex-strip-list');
   stripList.innerHTML = '';
 
-  const labels = ['Face + Hair', 'Body + Clothes', 'Hair Bulk', 'Props', 'Legs'];
+  // Generate labels dynamically based on texture index and model
+  function getTexLabel(index, path) {
+    // Try to infer from path
+    if (path.includes('face') || path.includes('Face')) return 'Face';
+    if (path.includes('body') || path.includes('Body')) return 'Body';
+    if (path.includes('hair') || path.includes('Hair')) return 'Hair';
+    // Fallback: generic labels
+    const fallbackLabels = ['Face + Hair', 'Body + Clothes', 'Hair Bulk', 'Props', 'Legs'];
+    return fallbackLabels[index] || `Texture ${index}`;
+  }
 
   for (let i = 0; i < texState.textures.length; i++) {
     const texPath = texState.textures[i];
@@ -3343,10 +3428,11 @@ async function loadTextureStrip() {
     const img = document.createElement('img');
     img.src = `/live2d-models/${currentModel}/runtime/${texPath}`;
     img.alt = `Texture ${i}`;
+    img.onerror = () => { img.style.opacity = '0.3'; };
 
     const label = document.createElement('div');
     label.className = 'tex-thumb-label';
-    label.textContent = labels[i] || `Tex ${i}`;
+    label.textContent = getTexLabel(i, texPath);
 
     thumb.appendChild(img);
     thumb.appendChild(label);
@@ -3375,8 +3461,15 @@ async function selectTexture(index) {
   texState.canvas = canvas;
   texState.ctx = ctx;
 
-  const labels = ['Face + Hair', 'Body + Clothes', 'Hair Bulk', 'Props', 'Legs'];
-  document.getElementById('tex-preview-label').textContent = labels[index] || `Texture ${index}`;
+  const fallbackLabels = ['Face + Hair', 'Body + Clothes', 'Hair Bulk', 'Props', 'Legs'];
+  const texPath = texState.textures[index] || '';
+  function getTexLabel(i, p) {
+    if (p.includes('face') || p.includes('Face')) return 'Face';
+    if (p.includes('body') || p.includes('Body')) return 'Body';
+    if (p.includes('hair') || p.includes('Hair')) return 'Hair';
+    return fallbackLabels[i] || `Texture ${i}`;
+  }
+  document.getElementById('tex-preview-label').textContent = getTexLabel(index, texPath);
 
   const img = new Image();
   img.crossOrigin = 'anonymous';

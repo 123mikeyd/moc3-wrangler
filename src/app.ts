@@ -362,6 +362,46 @@ export async function init(): Promise<void> {
         let lastTime = performance.now();
         let frameCount = 0;
         let drawErrors = 0;
+        (window as any).model = cubismModel;
+        (window as any).setArm = function(paramId, value) {
+            const idMgr = CubismFramework.getIdManager();
+            const cm = window.model.internalModel.coreModel;
+            cm.setParameterValueById(idMgr.getId(paramId), value);
+            console.log(`Set ${paramId} = ${value}`);
+        };
+        (window as any).setParts = function(partId, opacity) {
+            const cm = window.model.internalModel.coreModel;
+            const idx = cm.getPartIndex(partId);
+            if (idx >= 0) {
+                cm.setPartOpacityByIndex(idx, opacity);
+                console.log(`Set ${partId} opacity = ${opacity}`);
+            }
+        };
+        (window as any).listParts = function() {
+            const raw = window.model.internalModel.coreModel.getModel();
+            const out = [];
+            for (let i = 0; i < raw.parts.count; i++) {
+                out.push({ id: raw.parts.ids[i], opacity: raw.parts.opacities[i] });
+            }
+            console.table(out);
+            return out;
+        };
+        (window as any).listParams = function() {
+            const cm = window.model.internalModel.coreModel;
+            const raw = cm.getModel();
+            const out = [];
+            for (let i = 0; i < raw.parameters.count; i++) {
+                out.push({
+                    id: raw.parameters.ids[i],
+                    min: raw.parameters.minimumValues[i],
+                    max: raw.parameters.maximumValues[i],
+                    default: raw.parameters.defaultValues[i],
+                    current: raw.parameters.values[i]
+                });
+            }
+            console.table(out);
+            return out;
+        };
         function tick() {
             const now = performance.now();
             const dt = (now - lastTime) / 1000.0;

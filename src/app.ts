@@ -29,6 +29,9 @@ const CANVAS_ID = 'live2d-canvas';
 var cubismModel: HermesModel | null = null;
 var gl: WebGLRenderingContext | null = null;
 
+// Expose to window for debugging
+declare global { interface Window { cubismModel: any; gl: any; } }
+
 /**
  * Our model class — extends CubismUserModel with custom update.
  */
@@ -99,9 +102,10 @@ class HermesModel extends CubismUserModel {
         }
         this._modelMatrix = modelMatrix;
 
-        // 7. Create renderer
+        // 7. Create renderer — initialize model first, then set GL
         const renderer = new CubismRenderer_WebGL();
         renderer.initialize(this._model);
+        renderer.startUp(gl!);
         renderer.setIsPremultipliedAlpha(true);
         (this as any)._renderer = renderer;
 
@@ -122,20 +126,27 @@ class HermesModel extends CubismUserModel {
         // 10. Set initial state
         this._model.saveParameters();
 
-        // 11. Load idle motion (skip setEffectIds for now — just get something on screen)
+        // 11. Load idle motion (best-effort — don't kill render if motion fails)
         const motionCount = setting.getMotionCount('Idle');
         if (motionCount > 0) {
-            const motionFile = setting.getMotionFileName('Idle', 0);
-            const motionUrl = modelDir + motionFile;
-            console.log('Loading idle motion from:', motionUrl);
-            const motionBuf = await fetch(motionUrl).then(r => r.arrayBuffer());
-            const motion = this.loadMotion(motionBuf, motionBuf.byteLength, motionFile);
-            if (motion) {
-                const fadeIn = setting.getMotionFadeInTimeValue('Idle', 0);
-                const fadeOut = setting.getMotionFadeOutTimeValue('Idle', 0);
-                motion.setFadeInTime(fadeIn > 0 ? fadeIn : 1.0);
-                motion.setFadeOutTime(fadeOut > 0 ? fadeOut : 1.0);
-                this._motionManager.startMotionPriority(motion, false, 2);
+            try {
+                const motionFile = setting.getMotionFileName('Idle', 0);
+                const motionUrl = modelDir + motionFile;
+                console.log('Loading idle motion from:', motionUrl);
+                const motionBuf = await fetch(motionUrl).then(r => r.arrayBuffer());
+                const motion = this.loadMotion(motionBuf, motionBuf.byteLength, motionFile);
+                if (motion) {
+                    const fadeIn = setting.getMotionFadeInTimeValue('Idle', 0);
+                    const fadeOut = setting.getMotionFadeOutTimeValue('Idle', 0);
+                    motion.setFadeInTime(fadeIn > 0 ? fadeIn : 1.0);
+                    motion.setFadeOutTime(fadeOut > 0 ? fadeOut : 1.0);
+                    this._motionManager.startMotionPriority(motion, false, 2);
+                    console.log('Idle motion started');
+                } else {
+                    console.warn('loadMotion returned null — skipping motion');
+                }
+            } catch (motionErr) {
+                console.warn('Motion loading failed (non-fatal):', motionErr);
             }
         }
 
@@ -202,8 +213,109 @@ function loadTexture(url: string, gl: WebGLRenderingContext): Promise<WebGLTextu
 /**
  * Main entry point — called after Core is loaded.
  */
+/**
+ * Polyfill for Core 5.0 → Framework R5 compatibility.
+ * Core 5.0 doesn't expose model.offscreens or parts.offscreenIndices,
+ * but Framework R5 expects them. Patch Model.fromMoc to inject empty stubs.
+ */
+function patchCubismCore(): void {
+    const Core = (window as any).Live2DCubismCore;
+    if (!Core) return;
+
+    // Polyfill ColorBlendType constants (Cubism 5.3+ feature)
+    const colorBlendTypes: Record<string, number> = {
+        ColorBlendType_Normal: 0,
+        ColorBlendType_AddGlow: 1,
+        ColorBlendType_Add: 2,
+        ColorBlendType_Darken: 3,
+        ColorBlendType_Multiply: 4,
+        ColorBlendType_ColorBurn: 5,
+        ColorBlendType_LinearBurn: 6,
+        ColorBlendType_Lighten: 7,
+        ColorBlendType_Screen: 8,
+        ColorBlendType_ColorDodge: 9,
+        ColorBlendType_Overlay: 10,
+        ColorBlendType_SoftLight: 11,
+        ColorBlendType_HardLight: 12,
+        ColorBlendType_LinearLight: 13,
+        ColorBlendType_Hue: 14,
+        ColorBlendType_Color: 15,
+        ColorBlendType_AddCompatible: 16,
+        ColorBlendType_MultiplyCompatible: 17,
+    };
+    for (const [key, val] of Object.entries(colorBlendTypes)) {
+        if (!(key in Core)) {
+            Core[key] = val;
+        }
+    }
+    console.log('[Polyfill] Added ColorBlendType constants');
+
+    const origFromMoc = Core.Model.fromMoc.bind(Core.Model);
+    Core.Model.fromMoc = function(moc: any) {
+        const model = origFromMoc(moc);
+        if (!model) return model;
+
+        // Polyfill model.offscreens (Cubism 5.3+ feature)
+        if (!model.offscreens) {
+            const emptyF32 = new Float32Array(0);
+            const emptyU8 = new Uint8Array(0);
+            const emptyI32 = new Int32Array(0);
+            const emptyArr: any[] = [];
+            model.offscreens = {
+                count: 0,
+                constantFlags: emptyU8,
+                dynamicFlags: emptyU8,
+                textureIndices: emptyI32,
+                blendModes: emptyI32,
+                opacities: emptyF32,
+                ownerIndices: emptyI32,
+                masks: emptyArr,
+                maskCounts: emptyI32,
+                multiplyColors: emptyF32,
+                screenColors: emptyF32,
+            };
+            console.log('[Polyfill] Added empty model.offscreens');
+        }
+
+        // Polyfill drawables.blendModes (Cubism 5.3+ feature)
+        if (model.drawables && !model.drawables.blendModes) {
+            // Derive from constantFlags: bit 2 = additive, bit 3 = multiplicative
+            const count = model.drawables.count;
+            const flags = model.drawables.constantFlags;
+            const blendModes = new Int32Array(count);
+            for (let i = 0; i < count; i++) {
+                // Lower 8 bits = color blend, upper 8 bits = alpha blend
+                // 0 = Normal/Over (default)
+                blendModes[i] = 0;
+            }
+            model.drawables.blendModes = blendModes;
+            console.log('[Polyfill] Added drawables.blendModes');
+        }
+
+        // Polyfill parts.offscreenIndices
+        if (model.parts && !model.parts.offscreenIndices) {
+            model.parts.offscreenIndices = new Int32Array(model.parts.count).fill(-1);
+            console.log('[Polyfill] Added empty parts.offscreenIndices');
+        }
+
+        // Polyfill model.getRenderOrders() (Core 5.3+ method)
+        if (!model.getRenderOrders) {
+            model.getRenderOrders = function() {
+                return this.drawables.renderOrders;
+            };
+            console.log('[Polyfill] Added model.getRenderOrders()');
+        }
+
+        return model;
+    };
+    console.log('[Polyfill] CubismCore.Model.fromMoc patched');
+}
+
 export async function init(): Promise<void> {
     console.log('=== Hermes VTuber Editor — Phase 2 PoC ===');
+
+    // 0. Patch Core API for Framework compatibility
+    patchCubismCore();
 
     // 1. Create canvas
     const canvas = document.getElementById(CANVAS_ID) as HTMLCanvasElement;
@@ -225,6 +337,7 @@ export async function init(): Promise<void> {
         return;
     }
     console.log('WebGL context created');
+    (window as any).gl = gl; // debug access
 
     // 3. Initialize CubismFramework
     const option = new Option();
@@ -237,6 +350,7 @@ export async function init(): Promise<void> {
     // 4. Load and render model
     try {
         cubismModel = new HermesModel();
+        (window as any).cubismModel = cubismModel; // debug access
         await cubismModel.load(MODEL_DIR, MODEL_FILE);
 
         // Setup projection
@@ -246,6 +360,8 @@ export async function init(): Promise<void> {
 
         // 5. Start render loop
         let lastTime = performance.now();
+        let frameCount = 0;
+        let drawErrors = 0;
         function tick() {
             const now = performance.now();
             const dt = (now - lastTime) / 1000.0;
@@ -258,8 +374,25 @@ export async function init(): Promise<void> {
             gl!.blendFunc(gl!.ONE, gl!.ONE_MINUS_SRC_ALPHA);
 
             // Update + draw
-            cubismModel!.update(dt);
-            cubismModel!.draw();
+            try {
+                cubismModel!.update(dt);
+                cubismModel!.draw();
+                const err = gl!.getError();
+                if (err !== 0 && drawErrors < 5) {
+                    console.error(`WebGL error on frame ${frameCount}: ${err}`);
+                    drawErrors++;
+                }
+            } catch (e) {
+                if (drawErrors < 5) {
+                    console.error(`Draw error on frame ${frameCount}:`, e);
+                    drawErrors++;
+                }
+            }
+
+            frameCount++;
+            if (frameCount === 60) {
+                console.log(`[Debug] 60 frames rendered, renderer=${cubismModel!.getRenderer() !== null}, glError=${gl!.getError()}`);
+            }
 
             requestAnimationFrame(tick);
         }

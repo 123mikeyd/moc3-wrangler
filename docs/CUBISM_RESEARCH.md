@@ -684,7 +684,77 @@ at runtime, MUST disable pose manager first.
 
 ---
 
-## 18. REFERENCES
+## 19. CORE 5.0 ↔ FRAMEWORK R5 COMPATIBILITY POLYFILLS (DISCOVERED APR 14 2026)
+
+The Core 5.0.0 binary (live2dcubismcore.min.js) doesn't expose several APIs
+that the CubismWebFramework R5 source expects. These polyfills are REQUIRED
+for the framework to function with this Core version.
+
+### What's Missing and Why
+
+| Feature | Core Version | Framework Expects | Fix |
+|---------|-------------|-------------------|-----|
+| `model.offscreens` | 5.3+ | R5 framework | Inject empty stub object |
+| `drawables.blendModes` | 5.3+ | R5 framework | Derive from constantFlags (all Normal=0) |
+| `parts.offscreenIndices` | 5.3+ | R5 framework | Inject Int32Array(-1) |
+| `model.getRenderOrders()` | 5.3+ | R5 framework | Wrapper returning drawables.renderOrders |
+| `ColorBlendType_*` constants | 5.3+ | R5 framework | Polyfill 18 constants on Core namespace |
+| `Version.csmGetMocVersion(buffer)` | Broken in 5.0 | CubismMoc.create | Try/catch, fallback to latestMocVersion |
+| `renderer.startUp(gl)` | Required call | Our app | Must call before loadShaders |
+
+### The Polyfill Function (patchCubismCore)
+
+Located in `src/app.ts`, called before any framework code touches the Core.
+Patches `Core.Model.fromMoc` to wrap the returned model with missing properties.
+
+```typescript
+function patchCubismCore(): void {
+    const Core = (window as any).Live2DCubismCore;
+
+    // 1. ColorBlendType constants
+    Core.ColorBlendType_Normal = 0;
+    // ... (18 total)
+
+    // 2. Wrap Model.fromMoc
+    const origFromMoc = Core.Model.fromMoc.bind(Core.Model);
+    Core.Model.fromMoc = function(moc) {
+        const model = origFromMoc(moc);
+        if (!model.offscreens) model.offscreens = { count: 0, ...emptyArrays };
+        if (!model.drawables.blendModes) model.drawables.blendModes = new Int32Array(count);
+        if (!model.parts.offscreenIndices) model.parts.offscreenIndices = new Int32Array(count).fill(-1);
+        if (!model.getRenderOrders) model.getRenderOrders = () => this.drawables.renderOrders;
+        return model;
+    };
+}
+```
+
+### Why This Happens
+
+Live2D ships the Core binary separately from the framework. The Core is
+compiled from C via Emscripten and gets updated less frequently than the
+framework TypeScript source. New features (offscreen rendering, blend modes)
+added in Cubism 5.3 appear in the framework source but not in older Core
+binaries.
+
+**Lesson:** Always expect Core/Framework version skew. Build polyfills
+into your app layer, not into the framework source.
+
+### renderer.startUp(gl) — Required Call
+
+The CubismRenderer_WebGL has a `startUp(gl)` method that MUST be called
+after `initialize(model)` and before `loadShaders()`. Without it, the
+renderer has no WebGL context and shader loading fails silently.
+
+```typescript
+const renderer = new CubismRenderer_WebGL();
+renderer.initialize(this._model);
+renderer.startUp(gl!);  // ← CRITICAL — pass WebGL context here
+renderer.setIsPremultipliedAlpha(true);
+```
+
+---
+
+## 20. REFERENCES
 
 ### Official
 - SDK Manual: docs.live2d.com/en/cubism-sdk-manual/

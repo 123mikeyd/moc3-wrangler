@@ -91,14 +91,34 @@
         }
     </script>
 
-    <!-- Our bundled editor -->
-    <script src="/dist/editor.js?v=2"></script>
+    <!-- Polyfill Core 5.3+ constants BEFORE editor module loads -->
     <script>
-        // Auto-init after bundle loads
-        if (typeof editor !== 'undefined' && editor.init) {
-            editor.init();
-        } else {
-            console.error('editor.js did not export init()');
+        (function() {
+            var Core = window.Live2DCubismCore;
+            if (!Core) return;
+            var defaults = {
+                ColorBlendType_Normal: 0, ColorBlendType_AddGlow: 1,
+                ColorBlendType_Add: 2, ColorBlendType_Darken: 3,
+                ColorBlendType_Multiply: 4, ColorBlendType_ColorBurn: 5,
+                ColorBlendType_LinearBurn: 6, ColorBlendType_Lighten: 7,
+                ColorBlendType_Screen: 8, ColorBlendType_ColorDodge: 9,
+                ColorBlendType_Overlay: 10, ColorBlendType_SoftLight: 11,
+                ColorBlendType_HardLight: 12, ColorBlendType_LinearLight: 13,
+                ColorBlendType_Hue: 14, ColorBlendType_Color: 15,
+                ColorBlendType_AddCompatible: 16, ColorBlendType_MultiplyCompatible: 17,
+            };
+            for (var k in defaults) { if (!(k in Core)) Core[k] = defaults[k]; }
+            console.log('[Polyfill] Pre-loaded ColorBlendType constants');
+        })();
+    </script>
+
+    <!-- Our bundled editor (ESM) -->
+    <script type="module">
+        import { init } from '/dist/editor.js';
+        try {
+            await init();
+        } catch (err) {
+            console.error('init() failed:', err);
         }
     </script>
 </body>

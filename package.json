@@ -1,0 +1,16 @@
+{
+  "name": "hermes-vtuber-editor",
+  "version": "2.0.0-alpha",
+  "private": true,
+  "description": "Live2D VTuber Model Editor — Phase 2 (Direct Cubism Framework)",
+  "scripts": {
+    "build:framework": "cd lib/CubismWebFramework && npm install && npx tsc",
+    "build:editor": "esbuild src/app.ts --bundle --outfile=dist/editor.js --format=iife --platform=browser --sourcemap",
+    "build": "npm run build:framework && npm run build:editor",
+    "dev": "esbuild src/app.ts --bundle --outfile=dist/editor.js --format=iife --platform=browser --sourcemap --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.9.3"
+  }
+}

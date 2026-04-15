@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes VTuber Editor — Phase 2 PoC</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0a;
+            color: #a0a0a0;
+            font-family: 'Courier New', monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        h1 {
+            color: #1030C0;
+            margin: 20px 0 10px;
+            font-size: 18px;
+            letter-spacing: 2px;
+        }
+        #status {
+            color: #666;
+            font-size: 12px;
+            margin-bottom: 10px;
+        }
+        #live2d-canvas {
+            border: 1px solid #1a1a1a;
+            background: #111;
+        }
+        #log {
+            margin-top: 10px;
+            width: 800px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 11px;
+            color: #555;
+            border: 1px solid #1a1a1a;
+            padding: 8px;
+            background: #0d0d0d;
+        }
+        .log-error { color: #c44; }
+        .log-info { color: #4a4; }
+    </style>
+</head>
+<body>
+    <h1>HERMES VTUBER EDITOR — PHASE 2 PoC</h1>
+    <div id="status">Loading Cubism Core...</div>
+    <canvas id="live2d-canvas"></canvas>
+    <div id="log"></div>
+
+    <!-- Cubism Core must load BEFORE our app (creates global Live2DCubismCore) -->
+    <script src="/libs/live2dcubismcore.min.js"></script>
+    <script>
+        // Capture console output to log div
+        const logDiv = document.getElementById('log');
+        const origLog = console.log;
+        const origError = console.error;
+        function appendLog(msg, cls) {
+            const line = document.createElement('div');
+            line.className = cls || '';
+            line.textContent = msg;
+            logDiv.appendChild(line);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+        console.log = function(...args) {
+            origLog.apply(console, args);
+            appendLog(args.join(' '), 'log-info');
+        };
+        console.error = function(...args) {
+            origError.apply(console, args);
+            appendLog(args.join(' '), 'log-error');
+        };
+
+        // Verify Core loaded
+        if (typeof Live2DCubismCore === 'undefined') {
+            document.getElementById('status').textContent = 'ERROR: Cubism Core not loaded';
+            console.error('Live2DCubismCore is undefined — check /libs/live2dcubismcore.min.js');
+        } else {
+            document.getElementById('status').textContent = 'Core loaded. Starting editor...';
+            console.log('Live2DCubismCore version: ' + Live2DCubismCore.Version.csmGetVersion());
+            // Patch: Core 5.0 csmGetMocVersion expects pointer, not ArrayBuffer
+            // The framework passes ArrayBuffer which crashes — override to return latest moc version
+            const _origGetMocVersion = Live2DCubismCore.Version.csmGetMocVersion;
+            Live2DCubismCore.Version.csmGetMocVersion = function(buffer) {
+                try { return _origGetMocVersion(buffer); }
+                catch(e) { return Live2DCubismCore.Version.csmGetLatestMocVersion(); }
+            };
+        }
+    </script>
+
+    <!-- Our bundled editor -->
+    <script src="/dist/editor.js?v=2"></script>
+    <script>
+        // Auto-init after bundle loads
+        if (typeof editor !== 'undefined' && editor.init) {
+            editor.init();
+        } else {
+            console.error('editor.js did not export init()');
+        }
+    </script>
+</body>
+</html>

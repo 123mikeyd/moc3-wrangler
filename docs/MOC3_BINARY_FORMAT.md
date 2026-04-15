@@ -238,6 +238,64 @@ What we CANNOT extract easily:
 
 ---
 
+## 13. MULTI-MODEL COMPARISON (5 MODELS ANALYZED)
+
+```
+Model           Ver    Canvas       Parts  Meshes  Params  Defmrs  KeyPos     Size
+─────────────────────────────────────────────────────────────────────────────────
+biaoqiang_3     V3.0   7000x7000    36     181     172     125     106,656    593KB
+hermes_dark     V4.0   1280x1380    29     131     45      134     163,040    744KB
+shizuku         V4.0   1280x1380    29     131     45      134     163,040    744KB
+mao_pro         V5.0   5800x8400    31     260     128     175     142,512    850KB
+jiaran4         V3.3   518x518      9      61      68      50      70,768     359KB
+```
+
+### Key Diversities Found
+
+**Parameter naming:**
+- hermes_dark: custom `PARAM_ANGLE_X`, `PARAM_ARM_L_02` (snake_case)
+- jiaran4: standard `ParamAngleX`, `ParamEyeLOpen` (camelCase)
+- biaoqiang_3: embedded in binary, no cdi3.json (game export)
+
+**Hair physics approaches:**
+- hermes_dark: 6 named hair params (KAMIYURE_FRONT/BACK/SIDE_L/SIDE_R/TWIN_L/TWIN_R)
+- jiaran4: 3 hair params + 35 rotation deformers (individual strand control!)
+- biaoqiang_3: physics-driven (172 params total)
+
+**Texture strategies:**
+- hermes_dark: 5 × 1024×1024 atlases (split by body region)
+- mao_pro: 3 × 2048×2048 atlases (higher quality)
+- biaoqiang_3/jiaran4: 1 × 2048×2048 atlas (all-in-one)
+
+**Deformer usage:**
+- jiaran4: Tons of rotation deformers (41 "Param_Angle_Rotation" for hair strands)
+- hermes_dark: Mostly warp deformers (117 warp vs 17 rotation)
+- mao_pro: Balanced (116 warp + 59 rotation)
+
+### Version Feature Matrix
+```
+Feature                     V3.0    V3.3    V4.0    V5.0
+────────────────────────────────────────────────────────
+Basic deformation            ✓       ✓       ✓       ✓
+Quad source warp                     ✓       ✓       ✓
+Multiply/Screen colors                               ✓
+Blend shapes                                         ✓
+Glue                                                 ✓
+Drawable masks                                       ✓
+Offscreen rendering                                  ✓
+```
+
+### Characters (from texture analysis)
+- **biaoqiang_3**: Female, beach-themed (Arknights Hibiscus), V3.0 game export
+- **jiaran4**: Female, Klee (Genshin Impact), V3.3 chibi-style
+- **hermes_dark/shizuku**: Female, schoolgirl, V4.0 custom
+- **mao_pro**: Female, official Live2D sample, V5.0 with blend shapes
+
+**Missing:** Male model. Official Live2D "Mark" or "Haruto" samples would
+add gender diversity. Need to download from live2d.com/en/learn/sample/.
+
+---
+
 ## 12. NEXT STEPS
 
 1. Write a Python parser that extracts all object names and counts

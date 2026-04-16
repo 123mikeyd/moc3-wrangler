@@ -4247,8 +4247,8 @@ var Layers = class {
   disableAll() {
     this.mask = 0;
   }
-  test(layers) {
-    return (this.mask & layers.mask) !== 0;
+  test(layers2) {
+    return (this.mask & layers2.mask) !== 0;
   }
   isEnabled(channel) {
     return (this.mask & (1 << channel | 0)) !== 0;
@@ -18928,24 +18928,6 @@ StringKeyframeTrack.prototype.InterpolantFactoryMethodSmooth = void 0;
 var VectorKeyframeTrack = class extends KeyframeTrack {
 };
 VectorKeyframeTrack.prototype.ValueTypeName = "vector";
-var Cache = {
-  enabled: false,
-  files: {},
-  add: function(key, file) {
-    if (this.enabled === false) return;
-    this.files[key] = file;
-  },
-  get: function(key) {
-    if (this.enabled === false) return;
-    return this.files[key];
-  },
-  remove: function(key) {
-    delete this.files[key];
-  },
-  clear: function() {
-    this.files = {};
-  }
-};
 var LoadingManager = class {
   constructor(onLoad, onProgress, onError) {
     const scope = this;
@@ -19060,69 +19042,6 @@ var Loader = class {
   }
 };
 Loader.DEFAULT_MATERIAL_NAME = "__DEFAULT";
-var ImageLoader = class extends Loader {
-  constructor(manager) {
-    super(manager);
-  }
-  load(url, onLoad, onProgress, onError) {
-    if (this.path !== void 0) url = this.path + url;
-    url = this.manager.resolveURL(url);
-    const scope = this;
-    const cached = Cache.get(url);
-    if (cached !== void 0) {
-      scope.manager.itemStart(url);
-      setTimeout(function() {
-        if (onLoad) onLoad(cached);
-        scope.manager.itemEnd(url);
-      }, 0);
-      return cached;
-    }
-    const image = createElementNS("img");
-    function onImageLoad() {
-      removeEventListeners();
-      Cache.add(url, this);
-      if (onLoad) onLoad(this);
-      scope.manager.itemEnd(url);
-    }
-    function onImageError(event) {
-      removeEventListeners();
-      if (onError) onError(event);
-      scope.manager.itemError(url);
-      scope.manager.itemEnd(url);
-    }
-    function removeEventListeners() {
-      image.removeEventListener("load", onImageLoad, false);
-      image.removeEventListener("error", onImageError, false);
-    }
-    image.addEventListener("load", onImageLoad, false);
-    image.addEventListener("error", onImageError, false);
-    if (url.slice(0, 5) !== "data:") {
-      if (this.crossOrigin !== void 0) image.crossOrigin = this.crossOrigin;
-    }
-    scope.manager.itemStart(url);
-    image.src = url;
-    return image;
-  }
-};
-var TextureLoader = class extends Loader {
-  constructor(manager) {
-    super(manager);
-  }
-  load(url, onLoad, onProgress, onError) {
-    const texture = new Texture();
-    const loader = new ImageLoader(this.manager);
-    loader.setCrossOrigin(this.crossOrigin);
-    loader.setPath(this.path);
-    loader.load(url, function(image) {
-      texture.image = image;
-      texture.needsUpdate = true;
-      if (onLoad !== void 0) {
-        onLoad(texture);
-      }
-    }, onProgress, onError);
-    return texture;
-  }
-};
 var Clock = class {
   constructor(autoStart = true) {
     this.autoStart = autoStart;
@@ -19593,26 +19512,21 @@ var scene;
 var camera;
 var renderer;
 var clock;
-var puppet;
-var boneMap = /* @__PURE__ */ new Map();
-var partMap = /* @__PURE__ */ new Map();
-var springMap = /* @__PURE__ */ new Map();
-var paramMap = /* @__PURE__ */ new Map();
-var animMap = /* @__PURE__ */ new Map();
-var curAnim = null;
-var animT = 0;
-var animPlay = false;
+var layers = [];
+var activeLayer = null;
+var globalParams = /* @__PURE__ */ new Map();
 var dragging = false;
 var dragBone = null;
-var dragStartX = 0;
-var dragStartY = 0;
-var dragStartRot = 0;
+var paintActive = false;
+var paintPart = null;
 var paintCanvas = null;
 var paintCtx = null;
 var paintTex = null;
-var painting = false;
 var paintColor = "#ff0000";
 var paintSize = 8;
+var curAnim = null;
+var animT = 0;
+var animPlay = false;
 function init(id = "puppet-canvas") {
   const el = document.getElementById(id);
   renderer = new WebGLRenderer({ antialias: true, alpha: true });
@@ -19626,8 +19540,6 @@ function init(id = "puppet-canvas") {
   camera = new OrthographicCamera(-s * a, s * a, s, -s, 0.1, 2e3);
   camera.position.set(0, 0, 500);
   camera.lookAt(0, 0, 0);
-  puppet = new Group();
-  scene.add(puppet);
   clock = new Clock();
   const grid = new GridHelper(700, 14, 1710618, 1315860);
   grid.rotation.x = Math.PI / 2;
@@ -19636,31 +19548,153 @@ function init(id = "puppet-canvas") {
   renderer.domElement.addEventListener("mousedown", onDown);
   renderer.domElement.addEventListener("mousemove", onMove);
   renderer.domElement.addEventListener("mouseup", onUp);
+  renderer.domElement.addEventListener("mouseleave", onUp);
+  el.addEventListener("dragover", (e) => e.preventDefault());
+  el.addEventListener("drop", onDrop);
+  globalParams.set("HeadX", { name: "HeadX", min: -30, max: 30, value: 0, drives: [] });
+  globalParams.set("BodyX", { name: "BodyX", min: -15, max: 15, value: 0, drives: [] });
   tick();
-  console.log("Hermes Puppet Engine v4");
+  console.log("Hermes Puppet Engine v5 \u2014 ready");
 }
-function addBone(name, parent, x, y) {
-  const b = { name, parent: null, children: [], lx: x, ly: y, lr: 0, wx: x, wy: y, wr: 0, vis: null };
-  if (parent && boneMap.has(parent)) {
-    b.parent = boneMap.get(parent);
-    b.parent.children.push(b);
+async function addLayer(name, imageUrl) {
+  const img = await loadImage(imageUrl);
+  const tex = new Texture(img);
+  tex.needsUpdate = true;
+  tex.magFilter = LinearFilter;
+  tex.minFilter = LinearMipmapLinearFilter;
+  const W = img.width;
+  const H = img.height;
+  const layer = {
+    name,
+    image: img,
+    texture: tex,
+    bones: /* @__PURE__ */ new Map(),
+    parts: [],
+    springs: /* @__PURE__ */ new Map(),
+    params: /* @__PURE__ */ new Map(),
+    anims: /* @__PURE__ */ new Map(),
+    group: new Group(),
+    visible: true,
+    opacity: 1
+  };
+  scene.add(layer.group);
+  const addB = (n, p, x, y) => {
+    const b = { name: n, parent: null, children: [], lx: x, ly: y, lr: 0, wx: x, wy: y, wr: 0, vis: null };
+    if (p && layer.bones.has(p)) {
+      b.parent = layer.bones.get(p);
+      b.parent.children.push(b);
+    }
+    layer.bones.set(n, b);
+    return b;
+  };
+  addB("root", null, 0, 0);
+  addB("head", "root", 0, H * 0.22);
+  addB("body", "root", 0, -H * 0.05);
+  addB("hair_top", "head", 0, H * 0.15);
+  addB("hair_l", "head", -W * 0.18, H * 0.08);
+  addB("hair_r", "head", W * 0.18, H * 0.08);
+  addB("eye_l", "head", -W * 0.09, H * 0.01);
+  addB("eye_r", "head", W * 0.09, H * 0.01);
+  addB("arm_l", "body", -W * 0.2, H * 0.02);
+  addB("arm_r", "body", W * 0.2, H * 0.02);
+  addB("fore_l", "arm_l", 0, -H * 0.1);
+  addB("fore_r", "arm_r", 0, -H * 0.1);
+  const zOrder = layers.length;
+  const part = makePart(layer.group, "body", 0, 0, W, H, tex, 12, 12, zOrder);
+  const pw = (bone, cx, cy, r, str) => {
+    const count = part.restX.length;
+    const w = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      const dx = part.restX[i] - cx, dy = part.restY[i] - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      w[i] = dist > r * 2 ? 0 : Math.min(1, Math.exp(-(dist * dist) / (2 * r * r)) * Math.exp(-(dist * dist) / (2 * r * r)) * str);
+    }
+    part.weights.set(bone, w);
+  };
+  pw("head", 0, H * 0.22, W * 0.18, 1);
+  pw("hair_top", 0, H * 0.35, W * 0.2, 0.85);
+  pw("hair_l", -W * 0.2, H * 0.25, W * 0.1, 0.8);
+  pw("hair_r", W * 0.2, H * 0.25, W * 0.1, 0.8);
+  pw("eye_l", -W * 0.09, H * 0.19, W * 0.05, 0.9);
+  pw("eye_r", W * 0.09, H * 0.19, W * 0.05, 0.9);
+  pw("body", 0, -H * 0.05, W * 0.15, 1);
+  pw("arm_l", -W * 0.22, 0, W * 0.1, 0.9);
+  pw("arm_r", W * 0.22, 0, W * 0.1, 0.9);
+  pw("fore_l", -W * 0.22, -H * 0.12, W * 0.08, 0.85);
+  pw("fore_r", W * 0.22, -H * 0.12, W * 0.08, 0.85);
+  normalizeWeights(part);
+  layer.parts.push(part);
+  const addS = (bone, parent, stiff, damp, grav) => {
+    layer.springs.set(bone, { bone, parent, angle: 0, vel: 0, stiff, damp, grav });
+  };
+  addS("hair_top", "head", 0.4, 0.82, 0.5);
+  addS("hair_l", "head", 0.35, 0.85, 0.45);
+  addS("hair_r", "head", 0.35, 0.85, 0.45);
+  const addP = (n, min, max, def, drives) => {
+    layer.params.set(n, { name: n, min, max, value: def, drives });
+  };
+  addP("HeadX", -30, 30, 0, [{ bone: "head", prop: "rot", mult: 1 }]);
+  addP("HeadTilt", -20, 20, 0, [{ bone: "head", prop: "rot", mult: 0.3 }]);
+  addP("BodyX", -15, 15, 0, [{ bone: "body", prop: "rot", mult: 1 }]);
+  addP("ArmL", -55, 55, 0, [{ bone: "arm_l", prop: "rot", mult: 1 }]);
+  addP("ArmR", -55, 55, 0, [{ bone: "arm_r", prop: "rot", mult: -1 }]);
+  addP("ForeL", -90, 90, 0, [{ bone: "fore_l", prop: "rot", mult: 1 }]);
+  addP("ForeR", -90, 90, 0, [{ bone: "fore_r", prop: "rot", mult: -1 }]);
+  layer.anims.set("idle_breath", { name: "idle_breath", dur: 4, loop: true, kfs: [
+    { t: 0, vals: { BodyX: -1 }, ease: "inout" },
+    { t: 2, vals: { BodyX: 1 }, ease: "inout" },
+    { t: 4, vals: { BodyX: -1 }, ease: "inout" }
+  ] });
+  layer.anims.set("look_around", { name: "look_around", dur: 6, loop: true, kfs: [
+    { t: 0, vals: { HeadX: 0 }, ease: "inout" },
+    { t: 1.5, vals: { HeadX: -15 }, ease: "inout" },
+    { t: 3, vals: { HeadX: 0 }, ease: "inout" },
+    { t: 4.5, vals: { HeadX: 15 }, ease: "inout" },
+    { t: 6, vals: { HeadX: 0 }, ease: "inout" }
+  ] });
+  layer.anims.set("wave", { name: "wave", dur: 2, loop: false, kfs: [
+    { t: 0, vals: { ArmR: 0 }, ease: "out" },
+    { t: 0.4, vals: { ArmR: -50 }, ease: "inout" },
+    { t: 0.8, vals: { ArmR: -30 }, ease: "inout" },
+    { t: 1.2, vals: { ArmR: -50 }, ease: "inout" },
+    { t: 2, vals: { ArmR: 0 }, ease: "in" }
+  ] });
+  layers.push(layer);
+  setActiveLayer(layer);
+  buildUI();
+  console.log(`Layer "${name}": ${W}x${H}, ${layer.bones.size} bones, ${layer.parts.length} parts`);
+  return layer;
+}
+function removeLayer(name) {
+  const idx = layers.findIndex((l) => l.name === name);
+  if (idx < 0) return;
+  const layer = layers[idx];
+  scene.remove(layer.group);
+  layers.splice(idx, 1);
+  if (activeLayer === layer) setActiveLayer(layers[0] || null);
+  buildUI();
+}
+function setActiveLayer(layer) {
+  activeLayer = layer;
+  buildUI();
+}
+function setLayerOpacity(name, opacity) {
+  const layer = layers.find((l) => l.name === name);
+  if (layer) {
+    layer.opacity = opacity;
+    for (const part of layer.parts) {
+      part.mesh.material.opacity = opacity;
+    }
   }
-  boneMap.set(name, b);
-  return b;
 }
-function updateBones() {
-  for (const b of boneMap.values()) {
-    if (!b.parent) updateBone(b, 0, 0, 0);
+function setLayerVisibility(name, visible) {
+  const layer = layers.find((l) => l.name === name);
+  if (layer) {
+    layer.visible = visible;
+    layer.group.visible = visible;
   }
 }
-function updateBone(b, px, py, pr) {
-  const c = Math.cos(pr), s = Math.sin(pr);
-  b.wx = px + b.lx * c - b.ly * s;
-  b.wy = py + b.lx * s + b.ly * c;
-  b.wr = pr + b.lr;
-  for (const ch of b.children) updateBone(ch, b.wx, b.wy, b.wr);
-}
-function makePart(name, cx, cy, w, h, tex, cols, rows, z) {
+function makePart(parent, name, cx, cy, w, h, tex, cols, rows, z) {
   const verts = [], uv = [], idx = [];
   for (let r = 0; r <= rows; r++) for (let c = 0; c <= cols; c++) {
     verts.push(cx + (c / cols - 0.5) * w, cy + (0.5 - r / rows) * h, 0);
@@ -19681,43 +19715,25 @@ function makePart(name, cx, cy, w, h, tex, cols, rows, z) {
     depthWrite: false
   }));
   mesh.renderOrder = z;
-  puppet.add(mesh);
+  parent.add(mesh);
   const count = verts.length / 3;
   const restX = new Float32Array(count), restY = new Float32Array(count);
   for (let i = 0; i < count; i++) {
     restX[i] = verts[i * 3];
     restY[i] = verts[i * 3 + 1];
   }
-  const part = { name, mesh, restX, restY, weights: /* @__PURE__ */ new Map(), z, visible: true };
-  partMap.set(name, part);
-  return part;
-}
-function gaussWeight(dist, radius) {
-  if (dist > radius * 2) return 0;
-  const w = Math.exp(-(dist * dist) / (2 * radius * radius));
-  return w * w;
-}
-function paintWeights(part, boneName, cx, cy, radius, strength) {
-  const count = part.restX.length;
-  const w = new Float32Array(count);
-  for (let i = 0; i < count; i++) {
-    const dx = part.restX[i] - cx;
-    const dy = part.restY[i] - cy;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    w[i] = Math.min(1, gaussWeight(dist, radius) * strength);
-  }
-  part.weights.set(boneName, w);
+  return { name, mesh, restX, restY, weights: /* @__PURE__ */ new Map(), z, visible: true };
 }
 function normalizeWeights(part) {
   const count = part.restX.length;
-  const allWeights = Array.from(part.weights.values());
+  const all = Array.from(part.weights.values());
   for (let i = 0; i < count; i++) {
     let sum = 0;
-    for (const w of allWeights) sum += w[i];
-    if (sum > 0) for (const w of allWeights) w[i] /= sum;
+    for (const w of all) sum += w[i];
+    if (sum > 0) for (const w of all) w[i] /= sum;
   }
 }
-function deform(part) {
+function deform(part, bones) {
   if (!part.visible) {
     part.mesh.visible = false;
     return;
@@ -19725,19 +19741,15 @@ function deform(part) {
   part.mesh.visible = true;
   const pos = part.mesh.geometry.getAttribute("position");
   const count = pos.count;
-  const dx = new Float32Array(count);
-  const dy = new Float32Array(count);
+  const dx = new Float32Array(count), dy = new Float32Array(count);
   for (const [boneName, w] of part.weights) {
-    const b = boneMap.get(boneName);
+    const b = bones.get(boneName);
     if (!b) continue;
-    const ox = b.wx - b.lx;
-    const oy = b.wy - b.ly;
-    const cos = Math.cos(b.wr);
-    const sin = Math.sin(b.wr);
+    const ox = b.wx - b.lx, oy = b.wy - b.ly;
+    const cos = Math.cos(b.wr), sin = Math.sin(b.wr);
     for (let i = 0; i < count; i++) {
       if (w[i] === 0) continue;
-      const lx = part.restX[i] - b.lx;
-      const ly = part.restY[i] - b.ly;
+      const lx = part.restX[i] - b.lx, ly = part.restY[i] - b.ly;
       dx[i] += (lx * cos - ly * sin + b.lx - part.restX[i] + ox) * w[i];
       dy[i] += (lx * sin + ly * cos + b.ly - part.restY[i] + oy) * w[i];
     }
@@ -19745,31 +19757,66 @@ function deform(part) {
   for (let i = 0; i < count; i++) pos.setXY(i, part.restX[i] + dx[i], part.restY[i] + dy[i]);
   pos.needsUpdate = true;
 }
-function tickSprings(dt) {
+function updateBoneTree(bones) {
+  for (const b of bones.values()) {
+    if (!b.parent) updateBone(b, 0, 0, 0);
+  }
+}
+function updateBone(b, px, py, pr) {
+  const c = Math.cos(pr), s = Math.sin(pr);
+  b.wx = px + b.lx * c - b.ly * s;
+  b.wy = py + b.lx * s + b.ly * c;
+  b.wr = pr + b.lr;
+  for (const ch of b.children) updateBone(ch, b.wx, b.wy, b.wr);
+}
+function drawBonesForLayer(layer) {
+  layer.group.children = layer.group.children.filter((c) => !String(c.name).startsWith("bv"));
+  if (!layer.visible) return;
+  for (const b of layer.bones.values()) {
+    const g = new Group();
+    g.name = `bv_${b.name}`;
+    const isDrag = dragging && dragBone === b;
+    const j = new Mesh(
+      new CircleGeometry(isDrag ? 8 : 5, 12),
+      new MeshBasicMaterial({ color: isDrag ? 16729156 : 56831, transparent: true, opacity: 0.7, side: DoubleSide })
+    );
+    j.position.set(b.wx, b.wy, 60);
+    g.add(j);
+    if (b.parent) {
+      g.add(new Line(
+        new BufferGeometry().setFromPoints([
+          new Vector3(b.wx, b.wy, 60),
+          new Vector3(b.parent.wx, b.parent.wy, 60)
+        ]),
+        new LineBasicMaterial({ color: 56831, transparent: true, opacity: 0.4 })
+      ));
+    }
+    layer.group.add(g);
+  }
+}
+function tickSprings(layer, dt) {
   const cd = Math.min(dt, 0.04);
-  for (const s of springMap.values()) {
-    const p = boneMap.get(s.parent);
-    const c = boneMap.get(s.bone);
+  for (const s of layer.springs.values()) {
+    const p = layer.bones.get(s.parent);
+    const c = layer.bones.get(s.bone);
     if (!p || !c) continue;
-    const target = p.lr;
-    s.vel += ((target - s.angle) * s.stiff + -s.angle * s.grav * 0.08) * cd * 60;
+    s.vel += ((p.lr - s.angle) * s.stiff + -s.angle * s.grav * 0.08) * cd * 60;
     s.vel *= s.damp;
     s.angle += s.vel * cd * 60;
     c.lr = s.angle;
   }
 }
-function applyParams() {
-  for (const p of paramMap.values()) {
+function applyParams(layer) {
+  for (const p of layer.params.values()) {
     for (const d of p.drives) {
-      const b = boneMap.get(d.bone);
+      const b = layer.bones.get(d.bone);
       if (!b) continue;
-      const v = p.value * d.mult;
-      if (d.prop === "rot") b.lr = v * Math.PI / 180;
+      if (d.prop === "rot") b.lr = p.value * d.mult * Math.PI / 180;
     }
   }
 }
-function tickAnim(dt) {
-  if (!animPlay || !curAnim) return;
+function tickAnim(layer, dt) {
+  if (!animPlay || !curAnim || !layer.anims.has(curAnim.name)) return;
   animT += dt;
   if (animT >= curAnim.dur) {
     if (curAnim.loop) animT -= curAnim.dur;
@@ -19788,59 +19835,48 @@ function tickAnim(dt) {
     }
   }
   const t = next.t > prev.t ? (animT - prev.t) / (next.t - prev.t) : 0;
-  const e = ease(t, next.ease);
-  for (const [name, p] of paramMap) {
+  const e = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+  for (const [name, p] of layer.params) {
     const pv = prev.vals[name] ?? p.value;
     const nv = next.vals[name] ?? p.value;
     p.value = pv + (nv - pv) * e;
   }
   syncSliders();
 }
-function ease(t, type) {
-  if (type === "in") return t * t;
-  if (type === "out") return t * (2 - t);
-  if (type === "inout") return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-  return t;
-}
 function screenToWorld(ex, ey) {
   const rect = renderer.domElement.getBoundingClientRect();
   const a = rect.width / rect.height;
   const s = 350;
-  const nx = (ex - rect.left) / rect.width * 2 - 1;
-  const ny = -((ey - rect.top) / rect.height) * 2 + 1;
-  return [nx * s * a, ny * s];
+  return [((ex - rect.left) / rect.width * 2 - 1) * s * a, -((ey - rect.top) / rect.height * 2 - 1) * s];
 }
-function findNearestBone(wx, wy) {
-  let best = null;
-  let bestDist = 50;
-  for (const b of boneMap.values()) {
-    const d = Math.sqrt((b.wx - wx) ** 2 + (b.wy - wy) ** 2);
-    if (d < bestDist) {
-      bestDist = d;
-      best = b;
+function findBone(wx, wy) {
+  let best = null, bestD = 50;
+  for (const layer of layers) {
+    if (!layer.visible) continue;
+    for (const b of layer.bones.values()) {
+      const d = Math.sqrt((b.wx - wx) ** 2 + (b.wy - wy) ** 2);
+      if (d < bestD) {
+        bestD = d;
+        best = b;
+      }
     }
   }
   return best;
 }
 function onDown(e) {
+  if (paintActive) return;
   const [wx, wy] = screenToWorld(e.clientX, e.clientY);
-  const bone = findNearestBone(wx, wy);
+  const bone = findBone(wx, wy);
   if (bone) {
     dragging = true;
     dragBone = bone;
-    dragStartX = wx;
-    dragStartY = wy;
-    dragStartRot = bone.lr;
     renderer.domElement.style.cursor = "grabbing";
   }
 }
 function onMove(e) {
   if (!dragging || !dragBone) return;
   const [wx, wy] = screenToWorld(e.clientX, e.clientY);
-  const dx = wx - dragBone.wx;
-  const dy = wy - dragBone.wy;
-  const angle = Math.atan2(dy, dx);
-  dragBone.lr = angle + Math.PI / 2;
+  dragBone.lr = Math.atan2(wy - dragBone.wy, wx - dragBone.wx) + Math.PI / 2;
   syncSliders();
 }
 function onUp() {
@@ -19848,153 +19884,73 @@ function onUp() {
   dragBone = null;
   renderer.domElement.style.cursor = "default";
 }
-function initPaint(partName) {
-  const part = partMap.get(partName);
+function startPaint(partName = "body") {
+  if (!activeLayer) return;
+  const part = activeLayer.parts.find((p) => p.name === partName) || activeLayer.parts[0];
   if (!part) return;
   const mat = part.mesh.material;
-  const tex = mat.map;
-  if (!tex || !tex.image) return;
+  const img = activeLayer.image;
   paintCanvas = document.createElement("canvas");
-  paintCanvas.width = tex.image.width;
-  paintCanvas.height = tex.image.height;
+  paintCanvas.width = img.width;
+  paintCanvas.height = img.height;
   paintCtx = paintCanvas.getContext("2d");
-  paintCtx.drawImage(tex.image, 0, 0);
+  paintCtx.drawImage(img, 0, 0);
   paintTex = new CanvasTexture(paintCanvas);
   mat.map = paintTex;
   mat.needsUpdate = true;
-  renderer.domElement.addEventListener("mousedown", onPaintStart);
-  renderer.domElement.addEventListener("mousemove", onPaintMove);
-  renderer.domElement.addEventListener("mouseup", onPaintEnd);
-  console.log("Paint mode on:", partName);
-}
-function onPaintStart(e) {
-  if (!paintCtx) return;
-  painting = true;
-  paintAt(e);
-}
-function onPaintMove(e) {
-  if (!painting || !paintCtx) return;
-  paintAt(e);
-}
-function onPaintEnd() {
-  painting = false;
-  if (paintTex) paintTex.needsUpdate = true;
-}
-function paintAt(e) {
-  if (!paintCtx || !paintCanvas) return;
-  const rect = renderer.domElement.getBoundingClientRect();
-  const tx = (e.clientX - rect.left) / rect.width * paintCanvas.width;
-  const ty = (e.clientY - rect.top) / rect.height * paintCanvas.height;
-  paintCtx.fillStyle = paintColor;
-  paintCtx.beginPath();
-  paintCtx.arc(tx, ty, paintSize, 0, Math.PI * 2);
-  paintCtx.fill();
-  if (paintTex) paintTex.needsUpdate = true;
-}
-function setPaintColor(color) {
-  paintColor = color;
-}
-function setPaintSize(size) {
-  paintSize = size;
+  paintPart = part;
+  paintActive = true;
+  console.log("Paint mode ON");
 }
 function stopPaint() {
+  paintActive = false;
+  paintPart = null;
   paintCanvas = null;
   paintCtx = null;
   paintTex = null;
-  painting = false;
+  renderer.domElement.style.cursor = "default";
+  console.log("Paint mode OFF");
+}
+function setPaintColor(c) {
+  paintColor = c;
+}
+function setPaintSize(s) {
+  paintSize = s;
 }
 async function importMoc3(modelName) {
-  console.log("Importing .moc3:", modelName);
+  console.log("Importing:", modelName);
   const info = await fetch(`http://localhost:8080/api/model/${modelName}/info`).then((r) => r.json());
-  boneMap.clear();
-  partMap.clear();
-  springMap.clear();
-  paramMap2.clear();
-  animMap.clear();
-  while (puppet.children.length) puppet.remove(puppet.children[0]);
-  const textures = [];
-  for (const texPath of info.textures) {
-    const url = `/live2d-models/${modelName}/runtime/${texPath}`;
-    const tex = await new Promise((r) => new TextureLoader().load(url, r));
-    textures.push(tex);
-  }
-  addBone("root", null, 0, 0);
-  addBone("head", "root", 0, 200);
-  addBone("body", "root", 0, -50);
-  const paramMap2 = {
+  const layer = await addLayer(modelName, `/live2d-models/${modelName}/runtime/${info.textures[0]}`);
+  const mapping = {
     "PARAM_ANGLE_X": { bone: "head", prop: "rot", mult: 1 },
     "PARAM_ANGLE_Y": { bone: "head", prop: "rot", mult: 0.5 },
     "PARAM_BODY_X": { bone: "body", prop: "rot", mult: 1 },
-    "PARAM_ARM_L": { bone: "body", prop: "rot", mult: 0.5 },
-    "PARAM_ARM_R": { bone: "body", prop: "rot", mult: -0.5 }
+    "PARAM_ARM_L": { bone: "arm_l", prop: "rot", mult: 1 },
+    "PARAM_ARM_R": { bone: "arm_r", prop: "rot", mult: -1 }
   };
-  for (const [paramId, paramInfo] of Object.entries(info.parameters)) {
-    const drive = paramMap2[paramId];
-    if (drive) {
-      const min = -30, max = 30;
-      addParam(paramId.replace("PARAM_", ""), min, max, 0, [drive]);
-    }
-  }
-  for (let i = 0; i < textures.length; i++) {
-    const tex = textures[i];
-    const w = tex.image?.width || 1024;
-    const h = tex.image?.height || 1024;
-    const part = makePart(`tex_${i}`, 0, 0, w * 0.5, h * 0.5, tex, 6, 6, i);
-    paintWeights(part, "root", 0, 0, w, 1);
-    paintWeights(part, "head", 0, h * 0.15, w * 0.3, 0.8);
-    paintWeights(part, "body", 0, -h * 0.1, w * 0.25, 0.8);
-    normalizeWeights(part);
-  }
-  for (const [group, motions] of Object.entries(info.motions || {})) {
-    if (Array.isArray(motions) && motions.length > 0) {
-      const firstMotion = motions[0];
-      if (firstMotion.exists) {
-        animMap.set(`${group}_0`, {
-          name: `${group}_0`,
-          dur: firstMotion.duration || 3,
-          loop: firstMotion.loop !== false,
-          kfs: [
-            { t: 0, vals: {}, ease: "inout" },
-            { t: (firstMotion.duration || 3) / 2, vals: { "ANGLE_X": 10 }, ease: "inout" },
-            { t: firstMotion.duration || 3, vals: {}, ease: "inout" }
-          ]
-        });
+  for (const [id, info2] of Object.entries(info.parameters || {})) {
+    const m = mapping[id];
+    if (m) {
+      const name = id.replace("PARAM_", "");
+      if (!layer.params.has(name)) {
+        layer.params.set(name, { name, min: -30, max: 30, value: 0, drives: [m] });
       }
     }
   }
   buildUI();
-  console.log(`Imported: ${modelName}, ${boneMap.size} bones, ${partMap.size} parts, ${paramMap2.size} params`);
 }
-function drawBones() {
-  puppet.children = puppet.children.filter((c) => !String(c.name).startsWith("bv"));
-  for (const b of boneMap.values()) {
-    const g = new Group();
-    g.name = `bv_${b.name}`;
-    const j = new Mesh(
-      new CircleGeometry(dragging && dragBone === b ? 8 : 5, 12),
-      new MeshBasicMaterial({
-        color: dragging && dragBone === b ? 16729156 : 56831,
-        transparent: true,
-        opacity: 0.8,
-        side: DoubleSide
-      })
-    );
-    j.position.set(b.wx, b.wy, 60);
-    g.add(j);
-    if (b.parent) {
-      g.add(new Line(
-        new BufferGeometry().setFromPoints([
-          new Vector3(b.wx, b.wy, 60),
-          new Vector3(b.parent.wx, b.parent.wy, 60)
-        ]),
-        new LineBasicMaterial({ color: 56831, transparent: true, opacity: 0.5 })
-      ));
-    }
-    puppet.add(g);
-  }
+async function onDrop(e) {
+  e.preventDefault();
+  const file = e.dataTransfer?.files[0];
+  if (!file || !file.type.startsWith("image/")) return;
+  const url = URL.createObjectURL(file);
+  const name = file.name.replace(/\.[^.]+$/, "");
+  await addLayer(name, url);
+  document.getElementById("drop-zone")?.classList.add("hidden");
 }
 function syncSliders() {
-  for (const [name, p] of paramMap) {
+  if (!activeLayer) return;
+  for (const [name, p] of activeLayer.params) {
     const s = document.querySelector(`input[data-p="${name}"]`);
     if (s) {
       s.value = String(p.value);
@@ -20003,9 +19959,27 @@ function syncSliders() {
   }
 }
 function buildUI() {
+  const ll = document.getElementById("layer-list");
+  ll.innerHTML = "";
+  for (const layer of layers) {
+    const row = document.createElement("div");
+    row.className = "slider-row";
+    row.style.opacity = layer === activeLayer ? "1" : "0.5";
+    row.innerHTML = `
+            <label style="width:120px;font-size:14px;cursor:pointer;" onclick="window.setActive('${layer.name}')">${layer.name}</label>
+            <input type="range" min="0" max="1" step="0.05" value="${layer.opacity}" style="width:80px" oninput="window.setLayerOpacity('${layer.name}', parseFloat(this.value))">
+            <button class="preset-btn" style="padding:4px 8px;font-size:12px;" onclick="window.toggleLayer('${layer.name}')">${layer.visible ? "\u{1F441}" : "\u{1F441}\u200D\u{1F5E8}"}</button>
+            <button class="preset-btn" style="padding:4px 8px;font-size:12px;color:#c44;" onclick="window.removeLayer('${layer.name}')">\u2715</button>
+        `;
+    ll.appendChild(row);
+  }
   const sp = document.getElementById("slider-panel");
   sp.innerHTML = "";
-  for (const [name, p] of paramMap) {
+  if (!activeLayer) {
+    sp.innerHTML = '<div style="color:#444;font-size:14px;">No layer selected</div>';
+    return;
+  }
+  for (const [name, p] of activeLayer.params) {
     const row = document.createElement("div");
     row.className = "slider-row";
     row.innerHTML = `<label>${name}</label><input type="range" min="${p.min}" max="${p.max}" step="0.5" value="${p.value}" data-p="${name}"><span class="slider-value">${p.value.toFixed(1)}</span>`;
@@ -20019,16 +19993,18 @@ function buildUI() {
   }
   const ap = document.getElementById("anim-panel");
   ap.innerHTML = "";
-  for (const [name] of animMap) {
-    const btn = document.createElement("button");
-    btn.className = "preset-btn";
-    btn.textContent = `\u25B6 ${name}`;
-    btn.onclick = () => {
-      curAnim = animMap.get(name);
-      animT = 0;
-      animPlay = true;
-    };
-    ap.appendChild(btn);
+  if (activeLayer) {
+    for (const [name] of activeLayer.anims) {
+      const btn = document.createElement("button");
+      btn.className = "preset-btn";
+      btn.textContent = `\u25B6 ${name}`;
+      btn.onclick = () => {
+        curAnim = activeLayer.anims.get(name);
+        animT = 0;
+        animPlay = true;
+      };
+      ap.appendChild(btn);
+    }
   }
   const stop = document.createElement("button");
   stop.className = "preset-btn";
@@ -20037,118 +20013,68 @@ function buildUI() {
     animPlay = false;
   };
   ap.appendChild(stop);
-  document.getElementById("info-panel").textContent = `${boneMap.size} bones | ${partMap.size} meshes | ${paramMap.size} params | ${animMap.size} anims`;
-}
-function addParam(name, min, max, def, drives) {
-  paramMap.set(name, { name, min, max, value: def, drives });
+  document.getElementById("info-panel").textContent = `${layers.length} layers | ${activeLayer?.bones.size || 0} bones | ${activeLayer?.params.size || 0} params`;
 }
 async function loadPuppet(url) {
-  const tex = await new Promise((r) => new TextureLoader().load(url, r));
-  const W = tex.image?.width || 512;
-  const H = tex.image?.height || 512;
-  boneMap.clear();
-  partMap.clear();
-  springMap.clear();
-  paramMap.clear();
-  animMap.clear();
-  while (puppet.children.length) puppet.remove(puppet.children[0]);
-  addBone("root", null, 0, 0);
-  addBone("body", "root", 0, -H * 0.05);
-  addBone("head", "root", 0, H * 0.22);
-  addBone("hair_main", "head", 0, H * 0.05);
-  addBone("hair_l", "head", -W * 0.18, H * 0.1);
-  addBone("hair_r", "head", W * 0.18, H * 0.1);
-  addBone("eye_l", "head", -W * 0.09, H * 0.01);
-  addBone("eye_r", "head", W * 0.09, H * 0.01);
-  addBone("mouth", "head", 0, -H * 0.04);
-  addBone("arm_l", "body", -W * 0.2, H * 0.02);
-  addBone("arm_r", "body", W * 0.2, H * 0.02);
-  addBone("fore_l", "arm_l", 0, -H * 0.1);
-  addBone("fore_r", "arm_r", 0, -H * 0.1);
-  addBone("skirt", "body", 0, -H * 0.15);
-  addBone("neck", "root", 0, H * 0.1);
-  const part = makePart("body", 0, 0, W, H, tex, 12, 12, 0);
-  paintWeights(part, "head", 0, H * 0.22, W * 0.18, 1);
-  paintWeights(part, "hair_main", 0, H * 0.35, W * 0.22, 0.85);
-  paintWeights(part, "hair_l", -W * 0.2, H * 0.25, W * 0.1, 0.8);
-  paintWeights(part, "hair_r", W * 0.2, H * 0.25, W * 0.1, 0.8);
-  paintWeights(part, "eye_l", -W * 0.09, H * 0.19, W * 0.05, 0.9);
-  paintWeights(part, "eye_r", W * 0.09, H * 0.19, W * 0.05, 0.9);
-  paintWeights(part, "body", 0, -H * 0.05, W * 0.15, 1);
-  paintWeights(part, "arm_l", -W * 0.22, H * 0, W * 0.1, 0.9);
-  paintWeights(part, "arm_r", W * 0.22, H * 0, W * 0.1, 0.9);
-  paintWeights(part, "fore_l", -W * 0.22, -H * 0.12, W * 0.08, 0.85);
-  paintWeights(part, "fore_r", W * 0.22, -H * 0.12, W * 0.08, 0.85);
-  normalizeWeights(part);
-  springMap.set("hair_main", { bone: "hair_main", parent: "head", angle: 0, vel: 0, stiff: 0.4, damp: 0.82, grav: 0.5 });
-  springMap.set("hair_l", { bone: "hair_l", parent: "head", angle: 0, vel: 0, stiff: 0.35, damp: 0.85, grav: 0.45 });
-  springMap.set("hair_r", { bone: "hair_r", parent: "head", angle: 0, vel: 0, stiff: 0.35, damp: 0.85, grav: 0.45 });
-  springMap.set("skirt", { bone: "skirt", parent: "body", angle: 0, vel: 0, stiff: 0.25, damp: 0.88, grav: 0.3 });
-  addParam("HeadX", -30, 30, 0, [{ bone: "head", prop: "rot", mult: 1 }]);
-  addParam("HeadTilt", -20, 20, 0, [{ bone: "head", prop: "rot", mult: 0.4 }]);
-  addParam("BodyX", -15, 15, 0, [{ bone: "body", prop: "rot", mult: 1 }]);
-  addParam("EyeL", 0, 1.2, 1, []);
-  addParam("EyeR", 0, 1.2, 1, []);
-  addParam("ArmL", -55, 55, 0, [{ bone: "arm_l", prop: "rot", mult: 1 }]);
-  addParam("ArmR", -55, 55, 0, [{ bone: "arm_r", prop: "rot", mult: -1 }]);
-  addParam("ForeL", -90, 90, 0, [{ bone: "fore_l", prop: "rot", mult: 1 }]);
-  addParam("ForeR", -90, 90, 0, [{ bone: "fore_r", prop: "rot", mult: -1 }]);
-  animMap.set("idle_breath", { name: "idle_breath", dur: 4, loop: true, kfs: [
-    { t: 0, vals: { BodyX: -1 }, ease: "inout" },
-    { t: 2, vals: { BodyX: 1 }, ease: "inout" },
-    { t: 4, vals: { BodyX: -1 }, ease: "inout" }
-  ] });
-  animMap.set("look_around", { name: "look_around", dur: 6, loop: true, kfs: [
-    { t: 0, vals: { HeadX: 0 }, ease: "inout" },
-    { t: 1.5, vals: { HeadX: -15 }, ease: "inout" },
-    { t: 3, vals: { HeadX: 0 }, ease: "inout" },
-    { t: 4.5, vals: { HeadX: 15 }, ease: "inout" },
-    { t: 6, vals: { HeadX: 0 }, ease: "inout" }
-  ] });
-  animMap.set("wave", { name: "wave", dur: 2, loop: false, kfs: [
-    { t: 0, vals: { ArmR: 0 }, ease: "out" },
-    { t: 0.4, vals: { ArmR: -50 }, ease: "inout" },
-    { t: 0.8, vals: { ArmR: -30 }, ease: "inout" },
-    { t: 1.2, vals: { ArmR: -50 }, ease: "inout" },
-    { t: 2, vals: { ArmR: 0 }, ease: "in" }
-  ] });
-  buildUI();
-  console.log(`Loaded: ${W}x${H}, ${boneMap.size} bones, ${partMap.size} meshes`);
+  await addLayer("puppet", url);
+  document.getElementById("drop-zone")?.classList.add("hidden");
 }
 function tick() {
   requestAnimationFrame(tick);
   const dt = clock.getDelta();
-  applyParams();
-  tickSprings(dt);
-  tickAnim(dt);
-  updateBones();
-  drawBones();
-  for (const p of partMap.values()) deform(p);
+  for (const layer of layers) {
+    if (!layer.visible) continue;
+    applyParams(layer);
+    tickSprings(layer, dt);
+    tickAnim(layer, dt);
+    updateBoneTree(layer.bones);
+    drawBonesForLayer(layer);
+    for (const part of layer.parts) deform(part, layer.bones);
+  }
   renderer.render(scene, camera);
+}
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
 }
 window.engine = {
   init,
   loadPuppet,
+  addLayer,
+  removeLayer,
+  setActiveLayer,
+  setLayerOpacity,
+  setLayerVisibility,
   importMoc3,
-  initPaint,
+  startPaint,
+  stopPaint,
   setPaintColor,
   setPaintSize,
-  stopPaint,
   setParam(name, val) {
-    const p = paramMap.get(name);
-    if (p) {
-      p.value = val;
-      syncSliders();
+    if (activeLayer) {
+      const p = activeLayer.params.get(name);
+      if (p) {
+        p.value = val;
+        syncSliders();
+      }
     }
   },
   pokeSpring(name, imp) {
-    const s = springMap.get(name);
-    if (s) s.vel += imp;
+    if (activeLayer) {
+      const s = activeLayer.springs.get(name);
+      if (s) s.vel += imp;
+    }
   },
   playAnim(name) {
-    curAnim = animMap.get(name);
-    animT = 0;
-    animPlay = true;
+    if (activeLayer) {
+      curAnim = activeLayer.anims.get(name);
+      animT = 0;
+      animPlay = true;
+    }
   },
   stopAnim() {
     animPlay = false;
@@ -20161,26 +20087,33 @@ window.engine = {
       if (i > 25) clearInterval(iv);
     }, 50);
   },
-  get params() {
-    return paramMap;
+  get layers() {
+    return layers;
   },
-  get bones() {
-    return boneMap;
-  },
-  get parts() {
-    return partMap;
-  },
-  get springs() {
-    return springMap;
+  get activeLayer() {
+    return activeLayer;
   }
 };
+window.setActive = (name) => setActiveLayer(layers.find((l) => l.name === name) || null);
+window.toggleLayer = (name) => {
+  const l = layers.find((x) => x.name === name);
+  if (l) setLayerVisibility(name, !l.visible);
+  buildUI();
+};
+window.removeLayer = (name) => removeLayer(name);
+window.setLayerOpacity = (name, val) => setLayerOpacity(name, val);
 export {
+  addLayer,
   importMoc3,
   init,
-  initPaint,
   loadPuppet,
+  removeLayer,
+  setActiveLayer,
+  setLayerOpacity,
+  setLayerVisibility,
   setPaintColor,
   setPaintSize,
+  startPaint,
   stopPaint
 };
 /*! Bundled license information:

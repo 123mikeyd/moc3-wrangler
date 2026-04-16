@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes Puppet Engine v5</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0a0a0a; color: #c0c0c0; font-family: 'Courier New', monospace; display: flex; height: 100vh; overflow: hidden; font-size: 16px; }
+        #viewport { flex: 1; position: relative; background: #111; }
+        #puppet-canvas { width: 100%; height: 100%; }
+        #sidebar { width: 400px; background: #0d0d0d; border-left: 2px solid #222; overflow-y: auto; padding: 20px; }
+        h2 { color: #4080ff; font-size: 18px; letter-spacing: 2px; margin: 20px 0 10px; padding-bottom: 6px; border-bottom: 1px solid #222; }
+        h2:first-child { margin-top: 0; }
+        .slider-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+        .slider-row label { width: 90px; font-size: 14px; color: #aaa; text-align: right; flex-shrink: 0; font-weight: bold; }
+        .slider-row input[type="range"] { flex: 1; height: 6px; accent-color: #4080ff; cursor: pointer; }
+        .slider-value { width: 50px; font-size: 14px; color: #4080ff; text-align: right; font-weight: bold; }
+        #status { position: absolute; top: 12px; left: 12px; font-size: 14px; color: #888; background: rgba(0,0,0,0.8); padding: 8px 14px; border-radius: 6px; pointer-events: none; }
+        #drop-zone { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); text-align: center; color: #444; font-size: 20px; pointer-events: none; transition: opacity 0.3s; }
+        #drop-zone.hidden { opacity: 0; }
+        #drop-zone .icon { font-size: 60px; margin-bottom: 10px; }
+        .preset-btn { background: #1a1a2a; border: 2px solid #333; color: #ccc; padding: 8px 14px; font-family: 'Courier New', monospace; font-size: 14px; cursor: pointer; border-radius: 6px; margin: 3px; font-weight: bold; transition: all 0.15s; }
+        .preset-btn:hover { border-color: #4080ff; color: #fff; background: #1a2a4a; }
+        .preset-btn:active { background: #2a3a5a; transform: scale(0.97); }
+        #log { font-size: 11px; color: #444; max-height: 100px; overflow-y: auto; border: 1px solid #222; padding: 6px; margin-top: 10px; background: #080808; }
+    </style>
+</head>
+<body>
+    <div id="viewport">
+        <div id="puppet-canvas"></div>
+        <div id="status">Initializing...</div>
+        <div id="drop-zone"><div class="icon">🎭</div><div>Drop a PNG to add a layer</div><div style="font-size:14px;margin-top:8px;color:#555;">or click Load Demo</div></div>
+    </div>
+    <div id="sidebar">
+        <h2>🎭 HERMES PUPPET ENGINE</h2>
+        <div style="font-size:13px;color:#555;margin-bottom:10px;">v5 — Multi-layer, bones, physics, paint, animate</div>
+
+        <h2>📚 LAYERS</h2>
+        <div id="layer-list"><div style="color:#444;font-size:13px;">Drop an image to create a layer...</div></div>
+
+        <h2>📌 PARAMETERS</h2>
+        <div id="slider-panel"><div style="color:#444;font-size:13px;">Select a layer first...</div></div>
+
+        <h2>🎬 ANIMATIONS</h2>
+        <div id="anim-panel"><div style="color:#444;font-size:13px;">Load a layer first...</div></div>
+
+        <h2>⚙️ PRESETS</h2>
+        <div id="preset-panel">
+            <button class="preset-btn" onclick="preset('neutral')">Neutral</button>
+            <button class="preset-btn" onclick="preset('lookLeft')">Look Left</button>
+            <button class="preset-btn" onclick="preset('lookRight')">Look Right</button>
+            <button class="preset-btn" onclick="preset('armsUp')">Arms Up</button>
+            <button class="preset-btn" onclick="preset('wink')">Wink</button>
+            <button class="preset-btn" onclick="preset('reset')">Reset</button>
+        </div>
+
+        <h2>💬 PHYSICS</h2>
+        <div>
+            <button class="preset-btn" onclick="poke('hair_top', 0.4)">Poke Hair Top</button>
+            <button class="preset-btn" onclick="poke('hair_l', -0.3)">Poke Hair L</button>
+            <button class="preset-btn" onclick="poke('hair_r', 0.3)">Poke Hair R</button>
+            <button class="preset-btn" onclick="shake()">Shake Head</button>
+        </div>
+
+        <h2>🔬 IMPORT .MOC3</h2>
+        <div>
+            <button class="preset-btn" onclick="importM('hermes_dark')">hermes_dark</button>
+            <button class="preset-btn" onclick="importM('jiaran4_royal')">jiaran4_royal</button>
+            <button class="preset-btn" onclick="importM('Hiyori')">Hiyori</button>
+            <button class="preset-btn" onclick="importM('mao_pro')">mao_pro</button>
+        </div>
+
+        <h2>🎨 TEXTURE PAINT</h2>
+        <div>
+            <button class="preset-btn" onclick="startPaintMode()">🖌 Paint</button>
+            <button class="preset-btn" onclick="stopPaintMode()">⏹ Stop</button>
+            <input type="color" value="#ff0000" onchange="window.engine.setPaintColor(this.value)" style="width:36px;height:28px;vertical-align:middle;">
+            <input type="range" min="2" max="30" value="8" oninput="window.engine.setPaintSize(+this.value)" style="width:80px;vertical-align:middle;">
+            <span style="font-size:12px;color:#666;">size</span>
+        </div>
+
+        <h2>📁 LOAD</h2>
+        <div>
+            <input type="file" id="file-input" accept="image/*" style="display:none">
+            <button class="preset-btn" onclick="document.getElementById('file-input').click()">📷 Load Image</button>
+            <button class="preset-btn" onclick="loadDemo()">🧪 Load Demo</button>
+        </div>
+
+        <h2>📊 INFO</h2>
+        <div id="info-panel" style="font-size:13px;color:#555;">No layers loaded</div>
+        <div id="log"></div>
+    </div>
+
+    <script type="module">
+        import { init, loadPuppet, importMoc3, startPaint, stopPaint, setPaintColor, setPaintSize } from './dist/engine.js?v=5';
+
+        const logDiv = document.getElementById('log');
+        const origLog = console.log;
+        console.log = function(...a) { origLog.apply(console, a); const d = document.createElement('div'); d.textContent = a.join(' '); logDiv.appendChild(d); logDiv.scrollTop = logDiv.scrollHeight; };
+
+        init('puppet-canvas');
+        document.getElementById('status').textContent = 'Ready — drop an image or load a model';
+
+        // File input
+        document.getElementById('file-input').addEventListener('change', async (e) => {
+            const f = e.target.files[0];
+            if (f) { await loadPuppet(URL.createObjectURL(f)); document.getElementById('drop-zone').classList.add('hidden'); }
+        });
+
+        // Drop zone click
+        const dz = document.getElementById('drop-zone');
+        dz.style.pointerEvents = 'auto'; dz.style.cursor = 'pointer';
+        dz.addEventListener('click', loadDemo);
+
+        // Global functions
+        window.loadPuppet = loadPuppet;
+        window.loadDemo = async function() {
+            const c = document.createElement('canvas'); c.width=512; c.height=512;
+            const x = c.getContext('2d');
+            x.fillStyle='#2a2a3a'; x.fillRect(0,0,512,512);
+            x.fillStyle='#3a5a8a'; x.fillRect(180,250,152,200);
+            x.fillStyle='#e8c4a0'; x.beginPath(); x.arc(256,180,70,0,Math.PI*2); x.fill();
+            x.fillStyle='#1a1a2a'; x.beginPath(); x.arc(256,150,80,Math.PI,Math.PI*2); x.fill(); x.fillRect(176,110,160,40);
+            x.fillStyle='#2050C0'; x.beginPath(); x.arc(230,175,12,0,Math.PI*2); x.fill(); x.beginPath(); x.arc(282,175,12,0,Math.PI*2); x.fill();
+            x.fillStyle='#fff'; x.beginPath(); x.arc(233,172,4,0,Math.PI*2); x.fill(); x.beginPath(); x.arc(285,172,4,0,Math.PI*2); x.fill();
+            x.strokeStyle='#c08080'; x.lineWidth=2; x.beginPath(); x.arc(256,200,15,0.1,Math.PI-0.1); x.stroke();
+            x.fillStyle='#e8c4a0'; x.fillRect(140,260,40,120); x.fillRect(332,260,40,120);
+            await loadPuppet(c.toDataURL());
+            dz.classList.add('hidden');
+        };
+
+        window.preset = function(name) {
+            const e = window.engine; if (!e) return;
+            const presets = {
+                neutral: {HeadX:0,HeadTilt:0,BodyX:0,ArmL:0,ArmR:0,ForeL:0,ForeR:0},
+                lookLeft: {HeadX:-20,HeadTilt:5}, lookRight: {HeadX:20,HeadTilt:-5},
+                armsUp: {ArmL:-45,ArmR:45,ForeL:-30,ForeR:30}, wink: {EyeL:0,EyeR:1},
+                reset: {HeadX:0,HeadTilt:0,BodyX:0,ArmL:0,ArmR:0,ForeL:0,ForeR:0}
+            };
+            for (const [k,v] of Object.entries(presets[name]||{})) e.setParam(k,v);
+        };
+        window.poke = (n,imp) => { if(window.engine) window.engine.pokeSpring(n,imp); };
+        window.shake = () => { if(window.engine) window.engine.shakeHead(); };
+        window.importM = async (n) => { await importMoc3(n); dz.classList.add('hidden'); document.getElementById('status').textContent=n+' loaded'; };
+        window.startPaintMode = () => startPaint('body');
+        window.stopPaintMode = () => stopPaint();
+    </script>
+</body>
+</html>

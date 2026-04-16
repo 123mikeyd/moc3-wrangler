@@ -116,6 +116,11 @@ _static_dir = EDITOR_DIR / "static"
 if _static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
+# Phase 2: Serve Hermes Puppet Engine
+_puppet_dir = Path.home() / "hermes-puppet-engine"
+if _puppet_dir.exists():
+    app.mount("/puppet", StaticFiles(directory=str(_puppet_dir)), name="puppet")
+
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_editor():

@@ -9,6 +9,7 @@
  */
 
 import * as THREE from 'three';
+import { handleDrop, autoSeparate } from './loader';
 
 // ============================================================
 //  TYPES
@@ -139,9 +140,9 @@ export function init(id = 'puppet-canvas'): void {
     renderer.domElement.addEventListener('mouseup', onUp);
     renderer.domElement.addEventListener('mouseleave', onUp);
 
-    // Drop zone for images
+    // Drop zone for images, PSD, XCF, model directories
     el.addEventListener('dragover', e => e.preventDefault());
-    el.addEventListener('drop', onDrop);
+    el.addEventListener('drop', onUniversalDrop);
 
     // Global params
     globalParams.set('HeadX', { name:'HeadX', min:-30, max:30, value:0, drives:[] });
@@ -617,6 +618,35 @@ export async function importMoc3(modelName: string): Promise<void> {
 //  DROP HANDLER
 // ============================================================
 
+// Drop handler for universal file support
+async function onUniversalDrop(e: DragEvent): Promise<void> {
+    const extractedLayers = await handleDrop(e);
+    
+    for (const ext of extractedLayers) {
+        const tex = new THREE.Texture(ext.image);
+        tex.needsUpdate = true;
+        tex.magFilter = THREE.LinearFilter;
+        
+        // Create layer from extracted data
+        const layer = await addLayer(ext.name, ext.image.src);
+        
+        // Apply opacity from PSD/XCF
+        if (ext.opacity < 1) {
+            setLayerOpacity(ext.name, ext.opacity);
+        }
+        if (!ext.visible) {
+            setLayerVisibility(ext.name, false);
+        }
+    }
+    
+    if (extractedLayers.length > 0) {
+        document.getElementById('drop-zone')?.classList.add('hidden');
+        document.getElementById('status')!.textContent =
+            `${extractedLayers.length} layer(s) loaded`;
+    }
+}
+
+// Original simple drop (kept as fallback)
 async function onDrop(e: DragEvent): Promise<void> {
     e.preventDefault();
     const file = e.dataTransfer?.files[0];

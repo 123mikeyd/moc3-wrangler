@@ -18401,6 +18401,13 @@ var LineSegments = class extends Line {
     return this;
   }
 };
+var CanvasTexture = class extends Texture {
+  constructor(canvas, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy) {
+    super(canvas, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy);
+    this.isCanvasTexture = true;
+    this.needsUpdate = true;
+  }
+};
 var CircleGeometry = class _CircleGeometry extends BufferGeometry {
   constructor(radius = 1, segments = 32, thetaStart = 0, thetaLength = Math.PI * 2) {
     super();
@@ -19257,9 +19264,9 @@ var PropertyBinding = class _PropertyBinding {
       return root;
     }
     if (root.skeleton) {
-      const bone2 = root.skeleton.getBoneByName(nodeName);
-      if (bone2 !== void 0) {
-        return bone2;
+      const bone = root.skeleton.getBoneByName(nodeName);
+      if (bone !== void 0) {
+        return bone;
       }
     }
     if (root.children) {
@@ -19592,9 +19599,20 @@ var partMap = /* @__PURE__ */ new Map();
 var springMap = /* @__PURE__ */ new Map();
 var paramMap = /* @__PURE__ */ new Map();
 var animMap = /* @__PURE__ */ new Map();
-var currentAnim = null;
-var animTime = 0;
-var animPlaying = false;
+var curAnim = null;
+var animT = 0;
+var animPlay = false;
+var dragging = false;
+var dragBone = null;
+var dragStartX = 0;
+var dragStartY = 0;
+var dragStartRot = 0;
+var paintCanvas = null;
+var paintCtx = null;
+var paintTex = null;
+var painting = false;
+var paintColor = "#ff0000";
+var paintSize = 8;
 function init(id = "puppet-canvas") {
   const el = document.getElementById(id);
   renderer = new WebGLRenderer({ antialias: true, alpha: true });
@@ -19611,58 +19629,46 @@ function init(id = "puppet-canvas") {
   puppet = new Group();
   scene.add(puppet);
   clock = new Clock();
-  const g = new GridHelper(700, 14, 1710618, 1315860);
-  g.rotation.x = Math.PI / 2;
-  g.position.z = -2;
-  scene.add(g);
-  const cm = new LineBasicMaterial({ color: 2236962 });
-  scene.add(new Line(new BufferGeometry().setFromPoints([new Vector3(-15, 0, 0), new Vector3(15, 0, 0)]), cm));
-  scene.add(new Line(new BufferGeometry().setFromPoints([new Vector3(0, -15, 0), new Vector3(0, 15, 0)]), cm));
+  const grid = new GridHelper(700, 14, 1710618, 1315860);
+  grid.rotation.x = Math.PI / 2;
+  grid.position.z = -2;
+  scene.add(grid);
+  renderer.domElement.addEventListener("mousedown", onDown);
+  renderer.domElement.addEventListener("mousemove", onMove);
+  renderer.domElement.addEventListener("mouseup", onUp);
   tick();
-  console.log("Hermes Puppet Engine v3 \u2014 ready");
+  console.log("Hermes Puppet Engine v4");
 }
-function bone(name, parent, x, y) {
-  const b = {
-    name,
-    parent: parent ? boneMap.get(parent) : null,
-    children: [],
-    localX: x,
-    localY: y,
-    localRotation: 0,
-    worldX: x,
-    worldY: y,
-    worldRotation: 0,
-    visualizer: null
-  };
-  if (b.parent) b.parent.children.push(b);
+function addBone(name, parent, x, y) {
+  const b = { name, parent: null, children: [], lx: x, ly: y, lr: 0, wx: x, wy: y, wr: 0, vis: null };
+  if (parent && boneMap.has(parent)) {
+    b.parent = boneMap.get(parent);
+    b.parent.children.push(b);
+  }
   boneMap.set(name, b);
   return b;
 }
-function updateBoneTree() {
+function updateBones() {
   for (const b of boneMap.values()) {
     if (!b.parent) updateBone(b, 0, 0, 0);
   }
 }
 function updateBone(b, px, py, pr) {
   const c = Math.cos(pr), s = Math.sin(pr);
-  b.worldX = px + b.localX * c - b.localY * s;
-  b.worldY = py + b.localX * s + b.localY * c;
-  b.worldRotation = pr + b.localRotation;
-  for (const ch of b.children) updateBone(ch, b.worldX, b.worldY, b.worldRotation);
+  b.wx = px + b.lx * c - b.ly * s;
+  b.wy = py + b.lx * s + b.ly * c;
+  b.wr = pr + b.lr;
+  for (const ch of b.children) updateBone(ch, b.wx, b.wy, b.wr);
 }
 function makePart(name, cx, cy, w, h, tex, cols, rows, z) {
   const verts = [], uv = [], idx = [];
-  for (let r = 0; r <= rows; r++) {
-    for (let c = 0; c <= cols; c++) {
-      verts.push(cx + (c / cols - 0.5) * w, cy + (0.5 - r / rows) * h, 0);
-      uv.push(c / cols, 1 - r / rows);
-    }
+  for (let r = 0; r <= rows; r++) for (let c = 0; c <= cols; c++) {
+    verts.push(cx + (c / cols - 0.5) * w, cy + (0.5 - r / rows) * h, 0);
+    uv.push(c / cols, 1 - r / rows);
   }
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const a = r * (cols + 1) + c;
-      idx.push(a, a + 1, a + cols + 1, a + 1, a + cols + 2, a + cols + 1);
-    }
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const a = r * (cols + 1) + c;
+    idx.push(a, a + 1, a + cols + 1, a + 1, a + cols + 2, a + cols + 1);
   }
   const geo = new BufferGeometry();
   geo.setAttribute("position", new Float32BufferAttribute(verts, 3));
@@ -19677,30 +19683,46 @@ function makePart(name, cx, cy, w, h, tex, cols, rows, z) {
   mesh.renderOrder = z;
   puppet.add(mesh);
   const count = verts.length / 3;
-  const restX = new Float32Array(count);
-  const restY = new Float32Array(count);
+  const restX = new Float32Array(count), restY = new Float32Array(count);
   for (let i = 0; i < count; i++) {
     restX[i] = verts[i * 3];
     restY[i] = verts[i * 3 + 1];
   }
-  const part = { name, mesh, restX, restY, weights: /* @__PURE__ */ new Map(), z };
+  const part = { name, mesh, restX, restY, weights: /* @__PURE__ */ new Map(), z, visible: true };
   partMap.set(name, part);
   return part;
 }
-function weightByRegion(part, boneName, regionFn) {
+function gaussWeight(dist, radius) {
+  if (dist > radius * 2) return 0;
+  const w = Math.exp(-(dist * dist) / (2 * radius * radius));
+  return w * w;
+}
+function paintWeights(part, boneName, cx, cy, radius, strength) {
   const count = part.restX.length;
-  const wx = new Float32Array(count);
-  const wy = new Float32Array(count);
-  const bone2 = boneMap.get(boneName);
-  if (!bone2) return;
+  const w = new Float32Array(count);
   for (let i = 0; i < count; i++) {
-    const w = regionFn(part.restX[i], part.restY[i]);
-    wx[i] = w;
-    wy[i] = w;
+    const dx = part.restX[i] - cx;
+    const dy = part.restY[i] - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    w[i] = Math.min(1, gaussWeight(dist, radius) * strength);
   }
-  part.weights.set(boneName, { x: wx, y: wy });
+  part.weights.set(boneName, w);
+}
+function normalizeWeights(part) {
+  const count = part.restX.length;
+  const allWeights = Array.from(part.weights.values());
+  for (let i = 0; i < count; i++) {
+    let sum = 0;
+    for (const w of allWeights) sum += w[i];
+    if (sum > 0) for (const w of allWeights) w[i] /= sum;
+  }
 }
 function deform(part) {
+  if (!part.visible) {
+    part.mesh.visible = false;
+    return;
+  }
+  part.mesh.visible = true;
   const pos = part.mesh.geometry.getAttribute("position");
   const count = pos.count;
   const dx = new Float32Array(count);
@@ -19708,37 +19730,32 @@ function deform(part) {
   for (const [boneName, w] of part.weights) {
     const b = boneMap.get(boneName);
     if (!b) continue;
-    const offX = b.worldX - b.localX;
-    const offY = b.worldY - b.localY;
-    const cos = Math.cos(b.worldRotation);
-    const sin = Math.sin(b.worldRotation);
+    const ox = b.wx - b.lx;
+    const oy = b.wy - b.ly;
+    const cos = Math.cos(b.wr);
+    const sin = Math.sin(b.wr);
     for (let i = 0; i < count; i++) {
-      if (w.x[i] === 0 && w.y[i] === 0) continue;
-      const lx = part.restX[i] - b.localX;
-      const ly = part.restY[i] - b.localY;
-      const rotX = lx * cos - ly * sin + b.localX;
-      const rotY = lx * sin + ly * cos + b.localY;
-      dx[i] += (rotX - part.restX[i] + offX) * w.x[i];
-      dy[i] += (rotY - part.restY[i] + offY) * w.y[i];
+      if (w[i] === 0) continue;
+      const lx = part.restX[i] - b.lx;
+      const ly = part.restY[i] - b.ly;
+      dx[i] += (lx * cos - ly * sin + b.lx - part.restX[i] + ox) * w[i];
+      dy[i] += (lx * sin + ly * cos + b.ly - part.restY[i] + oy) * w[i];
     }
   }
-  for (let i = 0; i < count; i++) {
-    pos.setXY(i, part.restX[i] + dx[i], part.restY[i] + dy[i]);
-  }
+  for (let i = 0; i < count; i++) pos.setXY(i, part.restX[i] + dx[i], part.restY[i] + dy[i]);
   pos.needsUpdate = true;
 }
 function tickSprings(dt) {
   const cd = Math.min(dt, 0.04);
   for (const s of springMap.values()) {
-    const parent = boneMap.get(s.parent);
-    const child = boneMap.get(s.bone);
-    if (!parent || !child) continue;
-    const target = parent.localRotation + s.restAngle;
-    const f = (target - s.angle) * s.stiffness + -s.angle * s.gravity * 0.08;
-    s.velocity += f * cd * 60;
-    s.velocity *= s.damping;
-    s.angle += s.velocity * cd * 60;
-    child.localRotation = s.angle;
+    const p = boneMap.get(s.parent);
+    const c = boneMap.get(s.bone);
+    if (!p || !c) continue;
+    const target = p.lr;
+    s.vel += ((target - s.angle) * s.stiff + -s.angle * s.grav * 0.08) * cd * 60;
+    s.vel *= s.damp;
+    s.angle += s.vel * cd * 60;
+    c.lr = s.angle;
   }
 }
 function applyParams() {
@@ -19747,78 +19764,283 @@ function applyParams() {
       const b = boneMap.get(d.bone);
       if (!b) continue;
       const v = p.value * d.mult;
-      if (d.prop === "rot") b.localRotation = v * Math.PI / 180;
-      if (d.prop === "rotX") b.localRotation = v * Math.PI / 180;
+      if (d.prop === "rot") b.lr = v * Math.PI / 180;
     }
   }
 }
-function tickAnimation(dt) {
-  if (!animPlaying || !currentAnim) return;
-  animTime += dt;
-  if (animTime >= currentAnim.duration) {
-    if (currentAnim.loop) animTime -= currentAnim.duration;
+function tickAnim(dt) {
+  if (!animPlay || !curAnim) return;
+  animT += dt;
+  if (animT >= curAnim.dur) {
+    if (curAnim.loop) animT -= curAnim.dur;
     else {
-      animPlaying = false;
+      animPlay = false;
       return;
     }
   }
-  const kfs = currentAnim.keyframes;
+  const kfs = curAnim.kfs;
   let prev = kfs[0], next = kfs[kfs.length - 1];
   for (let i = 0; i < kfs.length - 1; i++) {
-    if (kfs[i].time <= animTime && kfs[i + 1].time >= animTime) {
+    if (kfs[i].t <= animT && kfs[i + 1].t >= animT) {
       prev = kfs[i];
       next = kfs[i + 1];
       break;
     }
   }
-  const t = next.time > prev.time ? (animTime - prev.time) / (next.time - prev.time) : 0;
-  const eased = ease(t, next.easing);
-  for (const [name, param] of paramMap) {
-    const pv = prev.values[name] ?? param.value;
-    const nv = next.values[name] ?? param.value;
-    param.value = pv + (nv - pv) * eased;
+  const t = next.t > prev.t ? (animT - prev.t) / (next.t - prev.t) : 0;
+  const e = ease(t, next.ease);
+  for (const [name, p] of paramMap) {
+    const pv = prev.vals[name] ?? p.value;
+    const nv = next.vals[name] ?? p.value;
+    p.value = pv + (nv - pv) * e;
   }
-  updateSliders();
+  syncSliders();
 }
 function ease(t, type) {
-  if (type === "ease-in") return t * t;
-  if (type === "ease-out") return t * (2 - t);
-  if (type === "ease-in-out") return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+  if (type === "in") return t * t;
+  if (type === "out") return t * (2 - t);
+  if (type === "inout") return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
   return t;
 }
-function updateSliders() {
-  for (const [name, p] of paramMap) {
-    const slider = document.querySelector(`input[data-p="${name}"]`);
-    if (slider) {
-      slider.value = String(p.value);
-      const label = slider.nextElementSibling;
-      if (label) label.textContent = p.value.toFixed(1);
+function screenToWorld(ex, ey) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const a = rect.width / rect.height;
+  const s = 350;
+  const nx = (ex - rect.left) / rect.width * 2 - 1;
+  const ny = -((ey - rect.top) / rect.height) * 2 + 1;
+  return [nx * s * a, ny * s];
+}
+function findNearestBone(wx, wy) {
+  let best = null;
+  let bestDist = 50;
+  for (const b of boneMap.values()) {
+    const d = Math.sqrt((b.wx - wx) ** 2 + (b.wy - wy) ** 2);
+    if (d < bestDist) {
+      bestDist = d;
+      best = b;
     }
   }
+  return best;
 }
-function drawBoneVis() {
+function onDown(e) {
+  const [wx, wy] = screenToWorld(e.clientX, e.clientY);
+  const bone = findNearestBone(wx, wy);
+  if (bone) {
+    dragging = true;
+    dragBone = bone;
+    dragStartX = wx;
+    dragStartY = wy;
+    dragStartRot = bone.lr;
+    renderer.domElement.style.cursor = "grabbing";
+  }
+}
+function onMove(e) {
+  if (!dragging || !dragBone) return;
+  const [wx, wy] = screenToWorld(e.clientX, e.clientY);
+  const dx = wx - dragBone.wx;
+  const dy = wy - dragBone.wy;
+  const angle = Math.atan2(dy, dx);
+  dragBone.lr = angle + Math.PI / 2;
+  syncSliders();
+}
+function onUp() {
+  dragging = false;
+  dragBone = null;
+  renderer.domElement.style.cursor = "default";
+}
+function initPaint(partName) {
+  const part = partMap.get(partName);
+  if (!part) return;
+  const mat = part.mesh.material;
+  const tex = mat.map;
+  if (!tex || !tex.image) return;
+  paintCanvas = document.createElement("canvas");
+  paintCanvas.width = tex.image.width;
+  paintCanvas.height = tex.image.height;
+  paintCtx = paintCanvas.getContext("2d");
+  paintCtx.drawImage(tex.image, 0, 0);
+  paintTex = new CanvasTexture(paintCanvas);
+  mat.map = paintTex;
+  mat.needsUpdate = true;
+  renderer.domElement.addEventListener("mousedown", onPaintStart);
+  renderer.domElement.addEventListener("mousemove", onPaintMove);
+  renderer.domElement.addEventListener("mouseup", onPaintEnd);
+  console.log("Paint mode on:", partName);
+}
+function onPaintStart(e) {
+  if (!paintCtx) return;
+  painting = true;
+  paintAt(e);
+}
+function onPaintMove(e) {
+  if (!painting || !paintCtx) return;
+  paintAt(e);
+}
+function onPaintEnd() {
+  painting = false;
+  if (paintTex) paintTex.needsUpdate = true;
+}
+function paintAt(e) {
+  if (!paintCtx || !paintCanvas) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const tx = (e.clientX - rect.left) / rect.width * paintCanvas.width;
+  const ty = (e.clientY - rect.top) / rect.height * paintCanvas.height;
+  paintCtx.fillStyle = paintColor;
+  paintCtx.beginPath();
+  paintCtx.arc(tx, ty, paintSize, 0, Math.PI * 2);
+  paintCtx.fill();
+  if (paintTex) paintTex.needsUpdate = true;
+}
+function setPaintColor(color) {
+  paintColor = color;
+}
+function setPaintSize(size) {
+  paintSize = size;
+}
+function stopPaint() {
+  paintCanvas = null;
+  paintCtx = null;
+  paintTex = null;
+  painting = false;
+}
+async function importMoc3(modelName) {
+  console.log("Importing .moc3:", modelName);
+  const info = await fetch(`http://localhost:8080/api/model/${modelName}/info`).then((r) => r.json());
+  boneMap.clear();
+  partMap.clear();
+  springMap.clear();
+  paramMap2.clear();
+  animMap.clear();
+  while (puppet.children.length) puppet.remove(puppet.children[0]);
+  const textures = [];
+  for (const texPath of info.textures) {
+    const url = `/live2d-models/${modelName}/runtime/${texPath}`;
+    const tex = await new Promise((r) => new TextureLoader().load(url, r));
+    textures.push(tex);
+  }
+  addBone("root", null, 0, 0);
+  addBone("head", "root", 0, 200);
+  addBone("body", "root", 0, -50);
+  const paramMap2 = {
+    "PARAM_ANGLE_X": { bone: "head", prop: "rot", mult: 1 },
+    "PARAM_ANGLE_Y": { bone: "head", prop: "rot", mult: 0.5 },
+    "PARAM_BODY_X": { bone: "body", prop: "rot", mult: 1 },
+    "PARAM_ARM_L": { bone: "body", prop: "rot", mult: 0.5 },
+    "PARAM_ARM_R": { bone: "body", prop: "rot", mult: -0.5 }
+  };
+  for (const [paramId, paramInfo] of Object.entries(info.parameters)) {
+    const drive = paramMap2[paramId];
+    if (drive) {
+      const min = -30, max = 30;
+      addParam(paramId.replace("PARAM_", ""), min, max, 0, [drive]);
+    }
+  }
+  for (let i = 0; i < textures.length; i++) {
+    const tex = textures[i];
+    const w = tex.image?.width || 1024;
+    const h = tex.image?.height || 1024;
+    const part = makePart(`tex_${i}`, 0, 0, w * 0.5, h * 0.5, tex, 6, 6, i);
+    paintWeights(part, "root", 0, 0, w, 1);
+    paintWeights(part, "head", 0, h * 0.15, w * 0.3, 0.8);
+    paintWeights(part, "body", 0, -h * 0.1, w * 0.25, 0.8);
+    normalizeWeights(part);
+  }
+  for (const [group, motions] of Object.entries(info.motions || {})) {
+    if (Array.isArray(motions) && motions.length > 0) {
+      const firstMotion = motions[0];
+      if (firstMotion.exists) {
+        animMap.set(`${group}_0`, {
+          name: `${group}_0`,
+          dur: firstMotion.duration || 3,
+          loop: firstMotion.loop !== false,
+          kfs: [
+            { t: 0, vals: {}, ease: "inout" },
+            { t: (firstMotion.duration || 3) / 2, vals: { "ANGLE_X": 10 }, ease: "inout" },
+            { t: firstMotion.duration || 3, vals: {}, ease: "inout" }
+          ]
+        });
+      }
+    }
+  }
+  buildUI();
+  console.log(`Imported: ${modelName}, ${boneMap.size} bones, ${partMap.size} parts, ${paramMap2.size} params`);
+}
+function drawBones() {
   puppet.children = puppet.children.filter((c) => !String(c.name).startsWith("bv"));
   for (const b of boneMap.values()) {
     const g = new Group();
     g.name = `bv_${b.name}`;
     const j = new Mesh(
-      new CircleGeometry(5, 12),
-      new MeshBasicMaterial({ color: 56831, transparent: true, opacity: 0.8, side: DoubleSide })
+      new CircleGeometry(dragging && dragBone === b ? 8 : 5, 12),
+      new MeshBasicMaterial({
+        color: dragging && dragBone === b ? 16729156 : 56831,
+        transparent: true,
+        opacity: 0.8,
+        side: DoubleSide
+      })
     );
-    j.position.set(b.worldX, b.worldY, 60);
+    j.position.set(b.wx, b.wy, 60);
     g.add(j);
     if (b.parent) {
-      const l = new Line(
+      g.add(new Line(
         new BufferGeometry().setFromPoints([
-          new Vector3(b.worldX, b.worldY, 60),
-          new Vector3(b.parent.worldX, b.parent.worldY, 60)
+          new Vector3(b.wx, b.wy, 60),
+          new Vector3(b.parent.wx, b.parent.wy, 60)
         ]),
-        new LineBasicMaterial({ color: 56831, transparent: true, opacity: 0.6 })
-      );
-      g.add(l);
+        new LineBasicMaterial({ color: 56831, transparent: true, opacity: 0.5 })
+      ));
     }
     puppet.add(g);
   }
+}
+function syncSliders() {
+  for (const [name, p] of paramMap) {
+    const s = document.querySelector(`input[data-p="${name}"]`);
+    if (s) {
+      s.value = String(p.value);
+      s.nextElementSibling.textContent = p.value.toFixed(1);
+    }
+  }
+}
+function buildUI() {
+  const sp = document.getElementById("slider-panel");
+  sp.innerHTML = "";
+  for (const [name, p] of paramMap) {
+    const row = document.createElement("div");
+    row.className = "slider-row";
+    row.innerHTML = `<label>${name}</label><input type="range" min="${p.min}" max="${p.max}" step="0.5" value="${p.value}" data-p="${name}"><span class="slider-value">${p.value.toFixed(1)}</span>`;
+    const slider = row.querySelector("input");
+    const val = row.querySelector(".slider-value");
+    slider.addEventListener("input", () => {
+      p.value = parseFloat(slider.value);
+      val.textContent = p.value.toFixed(1);
+    });
+    sp.appendChild(row);
+  }
+  const ap = document.getElementById("anim-panel");
+  ap.innerHTML = "";
+  for (const [name] of animMap) {
+    const btn = document.createElement("button");
+    btn.className = "preset-btn";
+    btn.textContent = `\u25B6 ${name}`;
+    btn.onclick = () => {
+      curAnim = animMap.get(name);
+      animT = 0;
+      animPlay = true;
+    };
+    ap.appendChild(btn);
+  }
+  const stop = document.createElement("button");
+  stop.className = "preset-btn";
+  stop.textContent = "\u23F9 Stop";
+  stop.onclick = () => {
+    animPlay = false;
+  };
+  ap.appendChild(stop);
+  document.getElementById("info-panel").textContent = `${boneMap.size} bones | ${partMap.size} meshes | ${paramMap.size} params | ${animMap.size} anims`;
+}
+function addParam(name, min, max, def, drives) {
+  paramMap.set(name, { name, min, max, value: def, drives });
 }
 async function loadPuppet(url) {
   const tex = await new Promise((r) => new TextureLoader().load(url, r));
@@ -19830,190 +20052,106 @@ async function loadPuppet(url) {
   paramMap.clear();
   animMap.clear();
   while (puppet.children.length) puppet.remove(puppet.children[0]);
-  bone("root", null, 0, 0);
-  bone("body", "root", 0, -H * 0.05);
-  bone("head", "root", 0, H * 0.22);
-  bone("neck", "root", 0, H * 0.1);
-  bone("hair_main", "head", 0, H * 0.05);
-  bone("hair_l", "head", -W * 0.18, H * 0.1);
-  bone("hair_r", "head", W * 0.18, H * 0.1);
-  bone("eye_l", "head", -W * 0.09, H * 0.01);
-  bone("eye_r", "head", W * 0.09, H * 0.01);
-  bone("mouth", "head", 0, -H * 0.04);
-  bone("arm_l", "body", -W * 0.2, H * 0.02);
-  bone("arm_r", "body", W * 0.2, H * 0.02);
-  bone("fore_l", "arm_l", 0, -H * 0.1);
-  bone("fore_r", "arm_r", 0, -H * 0.1);
-  bone("skirt", "body", 0, -H * 0.15);
+  addBone("root", null, 0, 0);
+  addBone("body", "root", 0, -H * 0.05);
+  addBone("head", "root", 0, H * 0.22);
+  addBone("hair_main", "head", 0, H * 0.05);
+  addBone("hair_l", "head", -W * 0.18, H * 0.1);
+  addBone("hair_r", "head", W * 0.18, H * 0.1);
+  addBone("eye_l", "head", -W * 0.09, H * 0.01);
+  addBone("eye_r", "head", W * 0.09, H * 0.01);
+  addBone("mouth", "head", 0, -H * 0.04);
+  addBone("arm_l", "body", -W * 0.2, H * 0.02);
+  addBone("arm_r", "body", W * 0.2, H * 0.02);
+  addBone("fore_l", "arm_l", 0, -H * 0.1);
+  addBone("fore_r", "arm_r", 0, -H * 0.1);
+  addBone("skirt", "body", 0, -H * 0.15);
+  addBone("neck", "root", 0, H * 0.1);
   const part = makePart("body", 0, 0, W, H, tex, 12, 12, 0);
-  const dist = (x1, y1, x2, y2) => Math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2);
-  const inEllipse = (x, y, cx, cy, rx, ry) => {
-    const dx = (x - cx) / rx, dy = (y - cy) / ry;
-    return Math.max(0, 1 - (dx * dx + dy * dy));
-  };
-  const inBox = (x, y, l, r, t, b) => {
-    if (x < l || x > r || y < b || y > t) return 0;
-    const cx = (l + r) / 2, cy = (t + b) / 2;
-    return 1 - Math.max(Math.abs(x - cx) / ((r - l) / 2), Math.abs(y - cy) / ((t - b) / 2)) * 0.3;
-  };
-  weightByRegion(part, "head", (x, y) => inEllipse(x, y, 0, H * 0.22, W * 0.2, H * 0.15));
-  weightByRegion(part, "hair_main", (x, y) => {
-    if (y < H * 0.25) return 0;
-    return inEllipse(x, y, 0, H * 0.35, W * 0.28, H * 0.12) * 0.9;
-  });
-  weightByRegion(part, "hair_l", (x, y) => {
-    if (x > -W * 0.05 || y < H * 0.1) return 0;
-    return inEllipse(x, y, -W * 0.2, H * 0.25, W * 0.12, H * 0.15) * 0.85;
-  });
-  weightByRegion(part, "hair_r", (x, y) => {
-    if (x < W * 0.05 || y < H * 0.1) return 0;
-    return inEllipse(x, y, W * 0.2, H * 0.25, W * 0.12, H * 0.15) * 0.85;
-  });
-  weightByRegion(part, "eye_l", (x, y) => inEllipse(x, y, -W * 0.09, H * 0.19, W * 0.06, H * 0.04));
-  weightByRegion(part, "eye_r", (x, y) => inEllipse(x, y, W * 0.09, H * 0.19, W * 0.06, H * 0.04));
-  weightByRegion(part, "body", (x, y) => inBox(x, y, -W * 0.18, W * 0.18, H * 0.08, -H * 0.25));
-  weightByRegion(part, "arm_l", (x, y) => inBox(x, y, -W * 0.35, -W * 0.12, H * 0.08, -H * 0.1));
-  weightByRegion(part, "arm_r", (x, y) => inBox(x, y, W * 0.12, W * 0.35, H * 0.08, -H * 0.1));
-  weightByRegion(part, "fore_l", (x, y) => {
-    if (x > -W * 0.05 || y > -H * 0.02) return 0;
-    return inBox(x, y, -W * 0.35, -W * 0.1, -H * 0.02, -H * 0.25) * 0.9;
-  });
-  weightByRegion(part, "fore_r", (x, y) => {
-    if (x < W * 0.05 || y > -H * 0.02) return 0;
-    return inBox(x, y, W * 0.1, W * 0.35, -H * 0.02, -H * 0.25) * 0.9;
-  });
-  springMap.set("hair_main", { bone: "hair_main", parent: "head", angle: 0, velocity: 0, stiffness: 0.4, damping: 0.82, gravity: 0.5, restAngle: 0 });
-  springMap.set("hair_l", { bone: "hair_l", parent: "head", angle: 0, velocity: 0, stiffness: 0.35, damping: 0.85, gravity: 0.45, restAngle: 0 });
-  springMap.set("hair_r", { bone: "hair_r", parent: "head", angle: 0, velocity: 0, stiffness: 0.35, damping: 0.85, gravity: 0.45, restAngle: 0 });
-  springMap.set("skirt", { bone: "skirt", parent: "body", angle: 0, velocity: 0, stiffness: 0.25, damping: 0.88, gravity: 0.3, restAngle: 0 });
-  const addP = (name, min, max, def, drives) => {
-    paramMap.set(name, { name, min, max, value: def, drives });
-  };
-  addP("HeadX", -30, 30, 0, [{ bone: "head", prop: "rot", mult: 1 }]);
-  addP("HeadTilt", -20, 20, 0, [{ bone: "head", prop: "rot", mult: 0.4 }]);
-  addP("BodyX", -15, 15, 0, [{ bone: "body", prop: "rot", mult: 1 }]);
-  addP("EyeLOpen", 0, 1.2, 1, []);
-  addP("EyeROpen", 0, 1.2, 1, []);
-  addP("ArmL", -55, 55, 0, [{ bone: "arm_l", prop: "rot", mult: 1 }]);
-  addP("ArmR", -55, 55, 0, [{ bone: "arm_r", prop: "rot", mult: -1 }]);
-  addP("ForeL", -90, 90, 0, [{ bone: "fore_l", prop: "rot", mult: 1 }]);
-  addP("ForeR", -90, 90, 0, [{ bone: "fore_r", prop: "rot", mult: -1 }]);
-  animMap.set("idle_breath", {
-    name: "idle_breath",
-    duration: 4,
-    loop: true,
-    keyframes: [
-      { time: 0, values: { BodyX: -1 }, easing: "ease-in-out" },
-      { time: 2, values: { BodyX: 1 }, easing: "ease-in-out" },
-      { time: 4, values: { BodyX: -1 }, easing: "ease-in-out" }
-    ]
-  });
-  animMap.set("look_around", {
-    name: "look_around",
-    duration: 6,
-    loop: true,
-    keyframes: [
-      { time: 0, values: { HeadX: 0 }, easing: "ease-in-out" },
-      { time: 1.5, values: { HeadX: -15 }, easing: "ease-in-out" },
-      { time: 3, values: { HeadX: 0 }, easing: "ease-in-out" },
-      { time: 4.5, values: { HeadX: 15 }, easing: "ease-in-out" },
-      { time: 6, values: { HeadX: 0 }, easing: "ease-in-out" }
-    ]
-  });
-  animMap.set("wave", {
-    name: "wave",
-    duration: 2,
-    loop: false,
-    keyframes: [
-      { time: 0, values: { ArmR: 0 }, easing: "ease-out" },
-      { time: 0.4, values: { ArmR: -50 }, easing: "ease-in-out" },
-      { time: 0.8, values: { ArmR: -30 }, easing: "ease-in-out" },
-      { time: 1.2, values: { ArmR: -50 }, easing: "ease-in-out" },
-      { time: 2, values: { ArmR: 0 }, easing: "ease-in" }
-    ]
-  });
+  paintWeights(part, "head", 0, H * 0.22, W * 0.18, 1);
+  paintWeights(part, "hair_main", 0, H * 0.35, W * 0.22, 0.85);
+  paintWeights(part, "hair_l", -W * 0.2, H * 0.25, W * 0.1, 0.8);
+  paintWeights(part, "hair_r", W * 0.2, H * 0.25, W * 0.1, 0.8);
+  paintWeights(part, "eye_l", -W * 0.09, H * 0.19, W * 0.05, 0.9);
+  paintWeights(part, "eye_r", W * 0.09, H * 0.19, W * 0.05, 0.9);
+  paintWeights(part, "body", 0, -H * 0.05, W * 0.15, 1);
+  paintWeights(part, "arm_l", -W * 0.22, H * 0, W * 0.1, 0.9);
+  paintWeights(part, "arm_r", W * 0.22, H * 0, W * 0.1, 0.9);
+  paintWeights(part, "fore_l", -W * 0.22, -H * 0.12, W * 0.08, 0.85);
+  paintWeights(part, "fore_r", W * 0.22, -H * 0.12, W * 0.08, 0.85);
+  normalizeWeights(part);
+  springMap.set("hair_main", { bone: "hair_main", parent: "head", angle: 0, vel: 0, stiff: 0.4, damp: 0.82, grav: 0.5 });
+  springMap.set("hair_l", { bone: "hair_l", parent: "head", angle: 0, vel: 0, stiff: 0.35, damp: 0.85, grav: 0.45 });
+  springMap.set("hair_r", { bone: "hair_r", parent: "head", angle: 0, vel: 0, stiff: 0.35, damp: 0.85, grav: 0.45 });
+  springMap.set("skirt", { bone: "skirt", parent: "body", angle: 0, vel: 0, stiff: 0.25, damp: 0.88, grav: 0.3 });
+  addParam("HeadX", -30, 30, 0, [{ bone: "head", prop: "rot", mult: 1 }]);
+  addParam("HeadTilt", -20, 20, 0, [{ bone: "head", prop: "rot", mult: 0.4 }]);
+  addParam("BodyX", -15, 15, 0, [{ bone: "body", prop: "rot", mult: 1 }]);
+  addParam("EyeL", 0, 1.2, 1, []);
+  addParam("EyeR", 0, 1.2, 1, []);
+  addParam("ArmL", -55, 55, 0, [{ bone: "arm_l", prop: "rot", mult: 1 }]);
+  addParam("ArmR", -55, 55, 0, [{ bone: "arm_r", prop: "rot", mult: -1 }]);
+  addParam("ForeL", -90, 90, 0, [{ bone: "fore_l", prop: "rot", mult: 1 }]);
+  addParam("ForeR", -90, 90, 0, [{ bone: "fore_r", prop: "rot", mult: -1 }]);
+  animMap.set("idle_breath", { name: "idle_breath", dur: 4, loop: true, kfs: [
+    { t: 0, vals: { BodyX: -1 }, ease: "inout" },
+    { t: 2, vals: { BodyX: 1 }, ease: "inout" },
+    { t: 4, vals: { BodyX: -1 }, ease: "inout" }
+  ] });
+  animMap.set("look_around", { name: "look_around", dur: 6, loop: true, kfs: [
+    { t: 0, vals: { HeadX: 0 }, ease: "inout" },
+    { t: 1.5, vals: { HeadX: -15 }, ease: "inout" },
+    { t: 3, vals: { HeadX: 0 }, ease: "inout" },
+    { t: 4.5, vals: { HeadX: 15 }, ease: "inout" },
+    { t: 6, vals: { HeadX: 0 }, ease: "inout" }
+  ] });
+  animMap.set("wave", { name: "wave", dur: 2, loop: false, kfs: [
+    { t: 0, vals: { ArmR: 0 }, ease: "out" },
+    { t: 0.4, vals: { ArmR: -50 }, ease: "inout" },
+    { t: 0.8, vals: { ArmR: -30 }, ease: "inout" },
+    { t: 1.2, vals: { ArmR: -50 }, ease: "inout" },
+    { t: 2, vals: { ArmR: 0 }, ease: "in" }
+  ] });
   buildUI();
-  console.log(`Puppet: ${W}x${H}, ${boneMap.size} bones, ${partMap.size} meshes, ${paramMap.size} params, ${animMap.size} anims`);
-}
-function buildUI() {
-  const sp = document.getElementById("slider-panel");
-  sp.innerHTML = "";
-  for (const [name, p] of paramMap) {
-    const row = document.createElement("div");
-    row.className = "slider-row";
-    row.innerHTML = `
-            <label>${name}</label>
-            <input type="range" min="${p.min}" max="${p.max}" step="0.5" value="${p.value}" data-p="${name}">
-            <span class="slider-value">${p.value.toFixed(1)}</span>
-        `;
-    const slider = row.querySelector("input");
-    const valEl = row.querySelector(".slider-value");
-    slider.addEventListener("input", () => {
-      p.value = parseFloat(slider.value);
-      valEl.textContent = p.value.toFixed(1);
-    });
-    sp.appendChild(row);
-  }
-  const ap = document.getElementById("anim-panel");
-  ap.innerHTML = "";
-  for (const [name, anim] of animMap) {
-    const btn = document.createElement("button");
-    btn.className = "preset-btn";
-    btn.textContent = `\u25B6 ${name}`;
-    btn.onclick = () => playAnim(name);
-    ap.appendChild(btn);
-  }
-  const stopBtn = document.createElement("button");
-  stopBtn.className = "preset-btn";
-  stopBtn.textContent = "\u23F9 Stop";
-  stopBtn.onclick = () => {
-    animPlaying = false;
-  };
-  ap.appendChild(stopBtn);
-  document.getElementById("info-panel").textContent = `${boneMap.size} bones | ${partMap.size} meshes | ${paramMap.size} params | ${animMap.size} anims`;
-}
-function playAnim(name) {
-  const anim = animMap.get(name);
-  if (!anim) return;
-  const startValues = {};
-  for (const [n, p] of paramMap) startValues[n] = p.value;
-  if (anim.keyframes[0].time > 0) {
-    anim.keyframes.unshift({ time: 0, values: startValues, easing: "linear" });
-  }
-  currentAnim = anim;
-  animTime = 0;
-  animPlaying = true;
+  console.log(`Loaded: ${W}x${H}, ${boneMap.size} bones, ${partMap.size} meshes`);
 }
 function tick() {
   requestAnimationFrame(tick);
   const dt = clock.getDelta();
   applyParams();
   tickSprings(dt);
-  tickAnimation(dt);
-  updateBoneTree();
-  drawBoneVis();
-  for (const part of partMap.values()) deform(part);
+  tickAnim(dt);
+  updateBones();
+  drawBones();
+  for (const p of partMap.values()) deform(p);
   renderer.render(scene, camera);
 }
 window.engine = {
   init,
   loadPuppet,
+  importMoc3,
+  initPaint,
+  setPaintColor,
+  setPaintSize,
+  stopPaint,
   setParam(name, val) {
     const p = paramMap.get(name);
     if (p) {
       p.value = val;
-      updateSliders();
+      syncSliders();
     }
   },
-  pokeSpring(name, impulse) {
+  pokeSpring(name, imp) {
     const s = springMap.get(name);
-    if (s) s.velocity += impulse;
+    if (s) s.vel += imp;
   },
   playAnim(name) {
-    playAnim(name);
+    curAnim = animMap.get(name);
+    animT = 0;
+    animPlay = true;
   },
   stopAnim() {
-    animPlaying = false;
+    animPlay = false;
   },
   shakeHead() {
     let i = 0;
@@ -20029,13 +20167,21 @@ window.engine = {
   get bones() {
     return boneMap;
   },
+  get parts() {
+    return partMap;
+  },
   get springs() {
     return springMap;
   }
 };
 export {
+  importMoc3,
   init,
-  loadPuppet
+  initPaint,
+  loadPuppet,
+  setPaintColor,
+  setPaintSize,
+  stopPaint
 };
 /*! Bundled license information:
 

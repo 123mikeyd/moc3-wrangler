@@ -174,11 +174,29 @@
         <div>
             <input type="file" id="file-input" accept="image/*" style="display:none">
             <button class="preset-btn" onclick="document.getElementById('file-input').click()">
-                Load Image
+                &#x1F4F7; Load Image
             </button>
             <button class="preset-btn" onclick="loadDemo()">
-                Load Demo
+                &#x1F9EA; Load Demo
             </button>
+        </div>
+
+        <h2>&#x1F52C; IMPORT .MOC3</h2>
+        <div>
+            <button class="preset-btn" onclick="importModel('hermes_dark')">hermes_dark</button>
+            <button class="preset-btn" onclick="importModel('jiaran4_royal')">jiaran4_royal</button>
+            <button class="preset-btn" onclick="importModel('Hiyori')">Hiyori</button>
+            <button class="preset-btn" onclick="importModel('mao_pro')">mao_pro</button>
+            <button class="preset-btn" onclick="importModel('biaoqiang_3')">biaoqiang_3</button>
+        </div>
+
+        <h2>&#x1F3A8; TEXTURE PAINT</h2>
+        <div>
+            <button class="preset-btn" onclick="startPaint()">&#x1F58C; Paint Mode</button>
+            <button class="preset-btn" onclick="stopPaintMode()">&#x1F6D1; Stop Paint</button>
+            <input type="color" id="paint-color" value="#ff0000" onchange="window.engine.setPaintColor(this.value)" style="width:40px;height:30px;vertical-align:middle;">
+            <input type="range" id="paint-size" min="2" max="30" value="8" oninput="window.engine.setPaintSize(parseInt(this.value))" style="width:100px;vertical-align:middle;">
+            <span style="font-size:13px;color:#888;">size</span>
         </div>
 
         <h2>&#x1F4CA; INFO</h2>
@@ -335,6 +353,19 @@
 
         window.shakeHead = function() {
             if (window.engine) window.engine.shakeHead();
+        };
+
+        window.importModel = async function(name) {
+            if (window.engine) await window.engine.importMoc3(name);
+            document.getElementById('drop-zone').classList.add('hidden');
+            document.getElementById('status').textContent = name + ' loaded';
+        };
+
+        window.startPaint = function() {
+            if (window.engine) window.engine.initPaint('body');
+        };
+        window.stopPaintMode = function() {
+            if (window.engine) window.engine.stopPaint();
         };
     </script>
 </body>
